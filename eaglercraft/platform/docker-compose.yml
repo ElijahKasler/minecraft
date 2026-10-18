@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: eagler
+      POSTGRES_PASSWORD: eagler
+      POSTGRES_DB: eagler
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eagler -d eagler"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  server:
+    build: .
+    ports:
+      - "${LISTEN_PORT:-3007}:3007"
+    environment:
+      NODE_ENV: production
+      LISTEN_PORT: "3007"
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:3007}
+      DATABASE_URL: postgres://eagler:eagler@db:5432/eagler
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY (64 hex chars) in .env}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-604800}
+      PLAY_TICKET_TTL_SECONDS: ${PLAY_TICKET_TTL_SECONDS:-120}
+      RATE_LIMIT_AUTH_PER_MIN: ${RATE_LIMIT_AUTH_PER_MIN:-20}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      MS_CLIENT_ID: ${MS_CLIENT_ID:-}
+      MS_CLIENT_SECRET: ${MS_CLIENT_SECRET:-}
+      MS_TENANT: ${MS_TENANT:-consumers}
+      CLIENT_STATIC_DIR: /app/client
+      WEB_STATIC_DIR: /app/web
+    volumes:
+      - ../target_teavm_javascript/javascript:/app/client:ro
+      - ./apps/web/dist:/app/web:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

@@ -1,0 +1,9 @@
+node_modules
+apps/**/node_modules
+apps/**/dist
+packages/shared/dist
+apps/web/node_modules
+dist
+.git
+*.log
+.env

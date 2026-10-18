@@ -1,0 +1,22 @@
+{
+  "name": "eaglerplatform",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Self-hosted EaglercraftX platform: website, accounts, Microsoft OAuth, server registry, Eagler WebSocket bridge and Java 1.8 proxy",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run build -w @eaglerplatform/shared && npm run build -w server && npm run build -w @eaglerplatform/web",
+    "typecheck": "npm run build -w @eaglerplatform/shared && npm run typecheck --workspaces --if-present",
+    "dev": "npm run build -w @eaglerplatform/shared && npm run dev -w server",
+    "dev:web": "npm run dev -w @eaglerplatform/web",
+    "migrate": "npm run build -w @eaglerplatform/shared && npm run migrate -w server",
+    "test": "npm run build -w @eaglerplatform/shared && npm run test -w server",
+    "start": "npm run build -w @eaglerplatform/shared && npm run start -w server"
+  }
+}

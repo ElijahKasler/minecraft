@@ -1,0 +1,27 @@
+.gradle
+.settings
+.classpath
+.project
+bin
+/build
+/target_*/build
+/desktopRuntime/_eagstorage*
+/desktopRuntime/eclipseProject/bin*
+/desktopRuntime/hs_err_*
+/desktopRuntime/crash-reports/*
+/desktopRuntime/options.txt
+/desktopRuntime/_eagstorage*
+/desktopRuntime/filesystem/*
+/desktopRuntime/downloads/*
+/desktopRuntime/screenshots/*
+
+# platform
+platform/node_modules
+platform/**/node_modules
+platform/.env
+platform/dist
+platform/**/dist
+platform/apps/web/dist
+platform/.vite
+platform/.nyc_output
+platform/coverage
