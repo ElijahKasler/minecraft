@@ -26,6 +26,77 @@ public class MwcProxyTokenFetch {
 		public String error = null;
 	}
 
+	public interface TokenCallback {
+		void onComplete(TokenResult result);
+	}
+
+	/**
+	 * Fire-and-forget token fetch on a daemon thread so the GUI never freezes.
+	 * The callback runs off the render thread; a watchdog guarantees it is
+	 * invoked exactly once even if the fetch thread hangs.
+	 */
+	public static void requestTokenAsync(final String proxyBase, final String mcHost, final int mcPort,
+			final TokenCallback callback) {
+		final java.util.concurrent.atomic.AtomicBoolean done = new java.util.concurrent.atomic.AtomicBoolean(false);
+		final Runnable[] watchdog = new Runnable[1];
+		watchdog[0] = new Runnable() {
+			@Override
+			public void run() {
+				try {
+					Thread.sleep(30000l);
+				} catch (Throwable t) {
+					return;
+				}
+				if (done.compareAndSet(false, true)) {
+					TokenResult timeout = new TokenResult();
+					timeout.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
+							net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.TIMEOUT,
+							"Proxy token request timed out (30s). Is the proxy running on " + proxyBase + "?");
+					try {
+						callback.onComplete(timeout);
+					} catch (Throwable t2) {
+					}
+				}
+			}
+		};
+		Thread worker = new Thread(new Runnable() {
+			@Override
+			public void run() {
+				TokenResult res;
+				try {
+					res = requestToken(proxyBase, mcHost, mcPort);
+				} catch (Throwable t) {
+					res = new TokenResult();
+					res.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
+							net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.UNREACHABLE,
+							"Token request crashed: " + t);
+				}
+				if (done.compareAndSet(false, true)) {
+					try {
+						callback.onComplete(res);
+					} catch (Throwable t2) {
+						logger.warn("Token callback threw", t2);
+					}
+				}
+			}
+		}, "MwcTokenFetch");
+		worker.setDaemon(true);
+		try {
+			worker.start();
+			Thread wd = new Thread(watchdog[0], "MwcTokenFetchWatchdog");
+			wd.setDaemon(true);
+			wd.start();
+		} catch (Throwable t) {
+			if (done.compareAndSet(false, true)) {
+				TokenResult res = new TokenResult();
+				res.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
+						net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.UNREACHABLE,
+						"Background token fetch is not supported on this platform: " + t);
+				callback.onComplete(res);
+			}
+		}
+	}
+
 	public static String normalizeBase(String proxyBase) {
 		String base = proxyBase == null ? "" : proxyBase.trim();
 		while (base.endsWith("/")) {

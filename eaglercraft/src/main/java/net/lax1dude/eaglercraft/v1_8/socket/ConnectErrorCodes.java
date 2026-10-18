@@ -87,6 +87,7 @@ public class ConnectErrorCodes {
 		public static final String BAD_URL = "MWC-TOKEN-BADURL";
 		public static final String NO_SERVER = "MWC-TOKEN-NOSERVER";
 		public static final String UNREACHABLE = "MWC-TOKEN-NET";
+		public static final String TIMEOUT = "MWC-TOKEN-TIMEOUT";
 		public static final String RATE_LIMITED = "MWC-HTTP-429";
 		public static final String FORBIDDEN = "MWC-HTTP-403";
 		public static final String HTTP = "MWC-HTTP";

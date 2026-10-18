@@ -47,12 +47,16 @@
 - AES/CTR encrypt-outbound / decrypt-inbound on play packets after Login Success.
 - Uses real UUID/username from Login Success for online mode; offline UUID for cracked servers.
 
-### 4. Multiplayer UI — proxy integrated into Add Server / Direct Connect
+### 4. Multiplayer UI — proxy integrated into the normal multiplayer menu
 **Files:**
-- `src/game/java/net/minecraft/client/gui/GuiMultiplayer.java` — removed separate "Vanilla via Proxy..." button.
-- `src/game/java/net/minecraft/client/gui/GuiScreenAddServer.java` — auto-converts `host:port` → proxy socket URL via `mwcProxyBase` (default `http://localhost:2344`) on save.
-- `src/game/java/net/minecraft/client/gui/GuiScreenServerList.java` — same conversion for Direct Connect.
-- `src/game/java/net/minecraft/client/gui/GuiScreenMwcProxyConnect.java` — auto-fills proxy URL from server IP host; saves server entry to `servers.txt`.
+- `src/game/java/net/minecraft/client/gui/GuiMultiplayer.java` — "Proxy Settings" link under Network Settings (`GuiProxySettingsButton`), styled like the relay button.
+- `src/game/java/net/minecraft/client/gui/GuiScreenAddServer.java` / `GuiScreenServerList.java` — store plain `host:port`.
+- `src/main/java/net/lax1dude/eaglercraft/v1_8/socket/mwc/GuiProxySettingsButton.java` — link button.
+- `src/main/java/net/lax1dude/eaglercraft/v1_8/socket/mwc/GuiScreenMwcProxyList.java` + `GuiSlotMwcProxy.java` — proxy list screen styled exactly like the relay server list (name + address, star on the active proxy, double-click or "Use Proxy" to activate).
+- `src/main/java/net/lax1dude/eaglercraft/v1_8/socket/mwc/GuiScreenMwcProxyEdit.java` — add/edit a proxy entry (name + address); the default "Local Proxy" entry's address is settable here too.
+- `src/main/java/net/lax1dude/eaglercraft/v1_8/socket/mwc/MwcProxyListManager.java` — persisted proxy list (EagRuntime storage key `"m"`), defaults to `Local Proxy` @ `http://localhost:2344`.
+
+**Flow:** type `host:port` in Add Server or Direct Connect (or select a saved one) and `GuiConnecting` fetches a proxy token off-thread via the active proxy, then joins. No separate "Vanilla via Proxy" screen and no username field — the username is always the current profile name. Saved `host:port` entries ping their MOTD through the proxy too (`MwcProxyStatusQuery`).
 
 ### 5. JEI recipe overlay (ported web-client JEI)
 **Files:**

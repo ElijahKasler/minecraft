@@ -27,6 +27,11 @@ public class AddressResolver {
 	}
 	
 	public static String resolveURI(String input) {
+		// proxy://host:port and bare host:port are vanilla servers reached
+		// through the mwc proxy; they are not eagler ws:// addresses.
+		if (net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyHandshake.isProxyAddress(input)) {
+			return input;
+		}
 		String lc = input.toLowerCase();
 		if(!lc.startsWith("ws://") && !lc.startsWith("wss://")) {
 			if(EagRuntime.requireSSL()) {

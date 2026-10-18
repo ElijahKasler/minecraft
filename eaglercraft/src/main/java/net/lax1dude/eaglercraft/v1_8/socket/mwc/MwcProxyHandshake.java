@@ -42,6 +42,39 @@ public class MwcProxyHandshake {
 		return addr != null && addr.contains("/api/vm/net/socket");
 	}
 
+	/**
+	 * True for server-list addresses that must be reached through the MWC proxy:
+	 * explicit {@code proxy://host:port} or a bare {@code host:port} (no scheme).
+	 * Eagler server addresses always carry a {@code ws://} or {@code wss://}
+	 * scheme and are unaffected.
+	 */
+	public static boolean isProxyAddress(String addr) {
+		if (addr == null) {
+			return false;
+		}
+		String a = addr.trim();
+		if (a.isEmpty()) {
+			return false;
+		}
+		if (a.startsWith("proxy://")) {
+			return true;
+		}
+		return a.indexOf("://") < 0;
+	}
+
+	/** {@code proxy://host[:port]} or bare {@code host[:port]} -> {host, portString}. */
+	public static String[] parseProxyAddress(String addr) {
+		String a = addr == null ? "" : addr.trim();
+		if (a.startsWith("proxy://")) {
+			a = a.substring(8);
+		}
+		return MwcProxyNetworkManager.splitHostPort(a, 25565);
+	}
+
+	public static String formatProxyAddress(String host, int port) {
+		return port == 25565 ? ("proxy://" + host) : ("proxy://" + host + ":" + port);
+	}
+
 	public static void setPendingTarget(String mcHost, int mcPort, String username) {
 		pendingMcHost = mcHost;
 		pendingMcPort = mcPort;

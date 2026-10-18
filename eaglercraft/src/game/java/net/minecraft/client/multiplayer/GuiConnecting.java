@@ -55,6 +55,13 @@ public class GuiConnecting extends GuiScreen {
 	private final GuiScreen previousGuiScreen;
 	private int timer = 0;
 
+	/** Vanilla-via-proxy: {host, portString, username} while the token is fetched. */
+	private String[] proxyTarget = null;
+	private boolean proxyTokenPhase = false;
+	private boolean proxyTokenStarted = false;
+	private volatile String proxySocketUrl = null;
+	private volatile String proxyTokenError = null;
+
 	public GuiConnecting(GuiScreen parGuiScreen, Minecraft mcIn, ServerData parServerData) {
 		this(parGuiScreen, mcIn, parServerData, false);
 	}
@@ -77,6 +84,15 @@ public class GuiConnecting extends GuiScreen {
 		if (RateLimitTracker.isLockedOut(serveraddress)) {
 			logger.error("Server locked this client out on a previous connection, will not attempt to reconnect");
 		} else {
+			if (net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyHandshake
+					.isProxyAddress(parServerData.serverIP)) {
+				String[] hp = net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyHandshake
+						.parseProxyAddress(parServerData.serverIP);
+				String user = net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyHandshake.pendingUsername;
+				net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyHandshake.clearPendingTarget();
+				this.proxyTarget = new String[] { hp[0], hp[1], user };
+				this.proxyTokenPhase = true;
+			}
 			this.connect(serveraddress, password, allowPlaintext,
 					parServerData.enableCookies && EagRuntime.getConfiguration().isEnableServerCookies());
 		}
@@ -132,6 +148,10 @@ public class GuiConnecting extends GuiScreen {
 	public void updateScreen() {
 		++timer;
 		if (timer > 1) {
+			if (proxyTokenPhase) {
+				updateProxyTokenPhase();
+				return;
+			}
 			if (this.currentAddress == null) {
 				mc.displayGuiScreen(GuiDisconnected.createRateLimitKick(previousGuiScreen));
 			} else if (webSocket == null) {
@@ -217,10 +237,18 @@ public class GuiConnecting extends GuiScreen {
 								}
 							}
 						}
+					} else if (mwcHandshaker == null && useMwcProxy
+							&& connState == EnumEaglerConnectionState.FAILED) {
+						// mwc socket died before the handshaker object existed
+						this.mc.getSession().reset();
+						mc.displayGuiScreen(new GuiDisconnected(previousGuiScreen, "connect.failed",
+								new ChatComponentText(net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
+										net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Play.CLOSED,
+										"Proxy socket closed before login. Is the proxy running?"))));
 					}
 				}
 			}
-			if (timer > 200) {
+			if (timer > (useMwcProxy ? 600 : 200)) {
 				if (webSocket != null) {
 					webSocket.close();
 				}
@@ -228,6 +256,78 @@ public class GuiConnecting extends GuiScreen {
 						new ChatComponentText("Handshake timed out")));
 			}
 		}
+	}
+
+	/**
+	 * Vanilla-via-proxy: fetch a connection token off-thread, then swap the
+	 * address for the returned proxy socket URL and continue like any mwc join.
+	 */
+	private void updateProxyTokenPhase() {
+		if (!proxyTokenStarted) {
+			proxyTokenStarted = true;
+			int port = 25565;
+			try {
+				port = Integer.parseInt(proxyTarget[1]);
+			} catch (NumberFormatException e) {
+			}
+			final int mcPort = port;
+			final String mcHost = proxyTarget[0];
+			logger.info("Requesting MWC proxy token for {}:{} via {}", mcHost, mcPort,
+					mc.gameSettings.mwcProxyBase);
+			net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyTokenFetch.requestTokenAsync(
+					mc.gameSettings.mwcProxyBase, mcHost, mcPort,
+					new net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyTokenFetch.TokenCallback() {
+						@Override
+						public void onComplete(
+								net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyTokenFetch.TokenResult res) {
+							if (res != null && res.ok) {
+								proxySocketUrl = res.socketUrl;
+							} else {
+								proxyTokenError = (res != null && res.error != null) ? res.error
+										: "[MWC-TOKEN-NET] Proxy request failed.";
+							}
+						}
+					});
+		}
+		if (proxyTokenError != null) {
+			String err = proxyTokenError;
+			proxyTokenError = null;
+			mc.displayGuiScreen(new GuiDisconnected(previousGuiScreen, "connect.failed", new ChatComponentText(err)));
+			return;
+		}
+		if (proxySocketUrl == null) {
+			if (cancel) {
+				return;
+			}
+			if (timer > 700) {
+				mc.displayGuiScreen(new GuiDisconnected(previousGuiScreen, "connect.failed",
+						new ChatComponentText(net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
+								net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.TIMEOUT,
+								"Proxy token request timed out. Is the proxy running on "
+										+ mc.gameSettings.mwcProxyBase + "?"))));
+			}
+			return;
+		}
+		proxyTokenPhase = false;
+		timer = 0;
+		int port = 25565;
+		try {
+			port = Integer.parseInt(proxyTarget[1]);
+		} catch (NumberFormatException e) {
+		}
+		String username = proxyTarget[2];
+		if (username == null || username.isEmpty()) {
+			try {
+				username = EaglerProfile.getName();
+			} catch (Throwable t) {
+				username = "Player";
+			}
+		}
+		net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyHandshake.setPendingTarget(proxyTarget[0], port, username);
+		currentAddress = proxySocketUrl;
+		proxySocketUrl = null;
+		logger.info("MWC proxy token acquired, opening socket for {}:{} -> {}", proxyTarget[0], port,
+				currentAddress);
 	}
 
 	/**+
@@ -257,7 +357,9 @@ public class GuiConnecting extends GuiScreen {
 	protected void actionPerformed(GuiButton parGuiButton) {
 		if (parGuiButton.id == 0) {
 			this.cancel = true;
-			this.webSocket.close();
+			if (this.webSocket != null) {
+				this.webSocket.close();
+			}
 			this.mc.displayGuiScreen(this.previousGuiScreen);
 		}
 
@@ -269,7 +371,14 @@ public class GuiConnecting extends GuiScreen {
 	 */
 	public void drawScreen(int i, int j, float f) {
 		this.drawDefaultBackground();
-		if (this.handshaker == null) {
+		if (this.proxyTokenPhase) {
+			this.drawCenteredString(this.fontRendererObj, "Contacting proxy...", this.width / 2,
+					this.height / 2 - 50, 16777215);
+			this.drawCenteredString(this.fontRendererObj,
+					"Proxy: " + this.mc.gameSettings.mwcProxyBase + "  (server: " + this.proxyTarget[0] + ":"
+							+ this.proxyTarget[1] + ")",
+					this.width / 2, this.height / 2 - 38, 0x808080);
+		} else if (this.handshaker == null && this.mwcHandshaker == null) {
 			this.drawCenteredString(this.fontRendererObj, I18n.format("connect.connecting", new Object[0]),
 					this.width / 2, this.height / 2 - 50, 16777215);
 		} else {

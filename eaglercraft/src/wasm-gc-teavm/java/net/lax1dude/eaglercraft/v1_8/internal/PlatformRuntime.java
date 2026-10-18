@@ -352,7 +352,7 @@ public class PlatformRuntime {
 	/**
 	 * Synchronous JSON POST for small API calls (mwc-proxy token request).
 	 * Returns "status\nbody" or null on transport failure. Uses a blocking
-	 * XHR; only called from the "Vanilla via Proxy" connect button.
+	 * XHR; only called from the background proxy token fetch thread.
 	 */
 	public static String postJSON(String url, String jsonBody) {
 		try {

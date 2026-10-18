@@ -208,25 +208,21 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 			System.arraycopy(tcpBuf, offset + lenBytes, pkt, 0, pktLen);
 			offset += lenBytes + pktLen;
 			++debugPacketCounter;
-			if (compressionThreshold >= 0 && !loginOnly) {
-				pkt = handleDecompression(pkt);
-				if (pkt == null) continue;
-			}
 			if (loginOnly) {
 				handleLoginPacket(pkt);
 				if (loginFinished) break; // remaining bytes belong to PLAY, re-parse next tick
-		} else {
-			if (encrypted && sharedSecret != null) {
-				int blocks = (pkt.length + 15) / 16;
-				pkt = MwcCrypto.get().aesCtr(sharedSecret, decryptCounter, pkt, false);
-				decryptCounter += blocks;
+			} else {
+				if (encrypted && sharedSecret != null) {
+					int blocks = (pkt.length + 15) / 16;
+					pkt = MwcCrypto.get().aesCtr(sharedSecret, decryptCounter, pkt, false);
+					decryptCounter += blocks;
+				}
+				if (compressionThreshold >= 0) {
+					pkt = handleDecompression(pkt);
+					if (pkt == null) continue;
+				}
+				dispatchPlayPacket(pkt);
 			}
-			if (compressionThreshold >= 0 && !loginOnly) {
-				pkt = handleDecompression(pkt);
-				if (pkt == null) continue;
-			}
-			dispatchPlayPacket(pkt);
-		}
 		}
 		if (offset > 0) {
 			int remaining = tcpLen - offset;
@@ -598,7 +594,7 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 		byte[] len = encodeVarInt(payload.length);
 		byte[] out = new byte[len.length + payload.length];
 		System.arraycopy(len, 0, out, 0, len.length);
-		System.arraycopy(payload, len.length, out, len.length, payload.length);
+		System.arraycopy(payload, 0, out, len.length, payload.length);
 		webSocketClient.send(out);
 	}
 

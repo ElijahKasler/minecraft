@@ -260,7 +260,20 @@ public class ServerList {
 				} else {
 					dat.pingToServer = -2l;
 					String addr = AddressResolver.resolveURI(dat.serverIP);
-					dat.currentQuery = ServerQueryDispatch.sendServerQuery(addr, "MOTD");
+					if (net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyHandshake
+							.isProxyAddress(dat.serverIP)) {
+						String[] hp = net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyHandshake
+								.parseProxyAddress(dat.serverIP);
+						int proxyPingPort = 25565;
+						try {
+							proxyPingPort = Integer.parseInt(hp[1]);
+						} catch (NumberFormatException e) {
+						}
+						dat.currentQuery = net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyStatusQuery
+								.dispatch(mc.gameSettings.mwcProxyBase, hp[0], proxyPingPort);
+					} else {
+						dat.currentQuery = ServerQueryDispatch.sendServerQuery(addr, "MOTD");
+					}
 					if (dat.currentQuery == null) {
 						dat.pingToServer = -1l;
 						dat.hasPing = true;

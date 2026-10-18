@@ -3,9 +3,6 @@ package net.minecraft.client.gui;
 import net.lax1dude.eaglercraft.v1_8.EagRuntime;
 import net.lax1dude.eaglercraft.v1_8.Keyboard;
 import net.lax1dude.eaglercraft.v1_8.minecraft.EnumInputEvent;
-import net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyHandshake;
-import net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyNetworkManager;
-import net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyTokenFetch;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.resources.I18n;
 
@@ -88,32 +85,7 @@ public class GuiScreenServerList extends GuiScreen {
 			if (parGuiButton.id == 1) {
 				this.field_146303_a.confirmClicked(false, 0);
 			} else if (parGuiButton.id == 0) {
-				String ipRaw = this.field_146302_g.getText().trim();
-				// Auto-route through MWC proxy: convert host:port to proxy socket URL.
-				if (!MwcProxyHandshake.isMwcSocketUrl(ipRaw)
-						&& this.mc.gameSettings.mwcProxyBase != null
-						&& !this.mc.gameSettings.mwcProxyBase.trim().isEmpty()) {
-					String[] hp = MwcProxyNetworkManager.splitHostPort(ipRaw, 25565);
-					int mcPort;
-					try {
-						mcPort = Integer.parseInt(hp[1]);
-					} catch (NumberFormatException e) {
-						mcPort = 25565;
-					}
-					MwcProxyTokenFetch.TokenResult res;
-					try {
-						res = MwcProxyTokenFetch.requestToken(this.mc.gameSettings.mwcProxyBase, hp[0], mcPort);
-					} catch (Throwable t) {
-						this.field_146302_g.setText("Proxy error: " + t.getMessage());
-						return;
-					}
-					if (!res.ok) {
-						this.field_146302_g.setText("Proxy error: " + (res.error != null ? res.error : "failed"));
-						return;
-					}
-					ipRaw = res.socketUrl;
-				}
-				this.field_146301_f.serverIP = ipRaw;
+				this.field_146301_f.serverIP = this.field_146302_g.getText().trim();
 				this.field_146303_a.confirmClicked(true, 0);
 			}
 
