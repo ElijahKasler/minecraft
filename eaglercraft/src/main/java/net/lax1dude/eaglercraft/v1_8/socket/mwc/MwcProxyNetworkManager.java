@@ -50,6 +50,7 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 	/** Raw TCP reassembly buffer (length-prefixed frames). */
 	private byte[] tcpBuf = new byte[65536];
 	private int tcpLen = 0;
+	private boolean loggedFirstData = false;
 
 	/** Login state machine. */
 	public enum MwcLoginState {
@@ -104,6 +105,32 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 		return loginState;
 	}
 
+	/** True once any binary data arrived from the server through the tunnel. */
+	public boolean hasReceivedTunnelData() {
+		return loggedFirstData;
+	}
+
+	/** Human-readable login stage for timeout/error messages and progress logs. */
+	public String describeLoginStage() {
+		switch (loginState) {
+			case SEND_HANDSHAKE:
+				return "preparing vanilla handshake";
+			case SEND_LOGIN_START:
+				return "sending login start";
+			case AWAIT_LOGIN:
+				if (authState != null) {
+					return authState.sharedSecret != null
+							? "encryption response sent, awaiting Login Success"
+							: "online-mode (Yggdrasil) authentication in progress";
+				}
+				return "login start sent, awaiting server reply";
+			case PLAY:
+				return "play";
+			default:
+				return loginState.name();
+		}
+	}
+
 	public boolean isLoginFinished() {
 		return loginFinished;
 	}
@@ -142,11 +169,13 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 		if (loginState == MwcLoginState.SEND_HANDSHAKE) {
 			sendVanillaHandshake(mcHost, mcPort, 2); // 2 = login
 			loginState = MwcLoginState.SEND_LOGIN_START;
+			logger.info("Sent vanilla handshake (protocol 47, login) for {}:{}", mcHost, mcPort);
 		}
 		if (loginState == MwcLoginState.SEND_LOGIN_START) {
 			sendLoginStart(username);
 			loginState = MwcLoginState.AWAIT_LOGIN;
 			packetState = EnumConnectionState.LOGIN;
+			logger.info("Sent login start for \"{}\"", username);
 		}
 		if (loginState == MwcLoginState.AWAIT_LOGIN) {
 			pumpTcpFrames(true);
@@ -186,11 +215,18 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 		}
 		List<IWebSocketFrame> frames = webSocketClient.getNextBinaryFrames();
 		if (frames == null || frames.isEmpty()) return;
+		int totalBytes = 0;
 		for (int fi = 0; fi < frames.size(); ++fi) {
 			byte[] chunk = frames.get(fi).getByteArray();
+			totalBytes += chunk.length;
 			ensureCapacity(tcpLen + chunk.length);
 			System.arraycopy(chunk, 0, tcpBuf, tcpLen, chunk.length);
 			tcpLen += chunk.length;
+		}
+		if (!loggedFirstData) {
+			loggedFirstData = true;
+			logger.info("First data from {}:{} via tunnel: {} bytes in {} frame(s)", mcHost, mcPort, totalBytes,
+					frames.size());
 		}
 		int offset = 0;
 		while (true) {
@@ -208,19 +244,19 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 			System.arraycopy(tcpBuf, offset + lenBytes, pkt, 0, pktLen);
 			offset += lenBytes + pktLen;
 			++debugPacketCounter;
+			if (encrypted && sharedSecret != null) {
+				int blocks = (pkt.length + 15) / 16;
+				pkt = MwcCrypto.get().aesCtr(sharedSecret, decryptCounter, pkt, false);
+				decryptCounter += blocks;
+			}
+			if (compressionThreshold >= 0) {
+				pkt = handleDecompression(pkt);
+				if (pkt == null) continue;
+			}
 			if (loginOnly) {
 				handleLoginPacket(pkt);
 				if (loginFinished) break; // remaining bytes belong to PLAY, re-parse next tick
 			} else {
-				if (encrypted && sharedSecret != null) {
-					int blocks = (pkt.length + 15) / 16;
-					pkt = MwcCrypto.get().aesCtr(sharedSecret, decryptCounter, pkt, false);
-					decryptCounter += blocks;
-				}
-				if (compressionThreshold >= 0) {
-					pkt = handleDecompression(pkt);
-					if (pkt == null) continue;
-				}
 				dispatchPlayPacket(pkt);
 			}
 		}
@@ -278,6 +314,16 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 				authDriver.begin(authState, new MwcAuthDriver.AuthCallback() {
 					@Override
 					public void onSuccess(MwcAuthState state) {
+						// Auth succeeded - enable encryption NOW: the server turns its cipher
+						// on right after validating our response, so Set Compression and
+						// Login Success arrive encrypted.
+						if (state.sharedSecret != null) {
+							sharedSecret = state.sharedSecret;
+							encrypted = true;
+							encryptCounter = 0;
+							decryptCounter = 0;
+							logger.info("MWC encryption enabled (shared secret={} bytes)", sharedSecret.length);
+						}
 						// Auth succeeded - send Encryption Response
 						try {
 							sendEncryptionResponse(state);
@@ -314,8 +360,10 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 				loginState = MwcLoginState.PLAY;
 				packetState = EnumConnectionState.PLAY;
 				setPluginInfo("vanilla-via-mwc", "1.8.8", null);
-				// Enable AES/CTR encryption if we did yggdrasil auth
-				if (authState != null && authState.sharedSecret != null) {
+				// Enable AES/CTR encryption if yggdrasil auth set it up (normally
+				// already enabled in onSuccess; this is a late-secret fallback only —
+				// never reset counters here, the stream position must be preserved)
+				if (!encrypted && authState != null && authState.sharedSecret != null) {
 					this.sharedSecret = authState.sharedSecret;
 					this.encrypted = true;
 					this.encryptCounter = 0;
@@ -390,27 +438,25 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 			return;
 		}
 		byte[] payload = temporaryBufferToBytes();
-		if (encrypted && sharedSecret != null && packetState == EnumConnectionState.PLAY) {
-			int blocks = (payload.length + 15) / 16;
-			payload = MwcCrypto.get().aesCtr(sharedSecret, encryptCounter, payload, true);
-			encryptCounter += blocks;
-		}
 		sendRawPlayPayload(payload);
 	}
 
 	@Override
 	public void injectRawFrame(byte[] data) {
 		// Custom payload channel: already a complete packet payload (id + body), needs length prefix.
-		if (encrypted && sharedSecret != null && packetState == EnumConnectionState.PLAY) {
-			int blocks = (data.length + 15) / 16;
-			data = MwcCrypto.get().aesCtr(sharedSecret, encryptCounter, data, true);
-			encryptCounter += blocks;
-		}
 		sendRawPlayPayload(data);
 	}
 
 	public void sendRawPlayPayload(byte[] payload) {
 		if (!isChannelOpen()) return;
+		if (compressionThreshold >= 0) {
+			payload = compressOutboundFrame(payload);
+		}
+		if (encrypted && sharedSecret != null && packetState == EnumConnectionState.PLAY) {
+			int blocks = (payload.length + 15) / 16;
+			payload = MwcCrypto.get().aesCtr(sharedSecret, encryptCounter, payload, true);
+			encryptCounter += blocks;
+		}
 		byte[] lenPrefix = encodeVarInt(payload.length);
 		byte[] out = new byte[lenPrefix.length + payload.length];
 		System.arraycopy(lenPrefix, 0, out, 0, lenPrefix.length);
@@ -536,6 +582,41 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 	 * TeaVM/JVM). Returns the decompressed packet payload (id + body),
 	 * or null if the packet was malformed.
 	 */
+	/**
+	 * Vanilla 1.8 compression framing for an outbound packet payload: a 0 marker
+	 * byte plus the raw payload when below the threshold, otherwise
+	 * VarInt(uncompressed size) followed by a zlib stream. The server's
+	 * decompressor expects exactly this format on serverbound frames too.
+	 */
+	private byte[] compressOutboundFrame(byte[] payload) {
+		if (payload.length < compressionThreshold) {
+			byte[] out = new byte[payload.length + 1];
+			out[0] = 0;
+			System.arraycopy(payload, 0, out, 1, payload.length);
+			return out;
+		}
+		java.util.zip.Deflater deflater = new java.util.zip.Deflater();
+		try {
+			deflater.setInput(payload);
+			deflater.finish();
+			byte[] comp = new byte[Math.max(payload.length + 64, 128)];
+			int total = 0;
+			while (!deflater.finished()) {
+				if (total + 256 >= comp.length) {
+					comp = java.util.Arrays.copyOf(comp, comp.length << 1);
+				}
+				total += deflater.deflate(comp, total, comp.length - total);
+			}
+			byte[] len = encodeVarInt(payload.length);
+			byte[] out = new byte[len.length + total];
+			System.arraycopy(len, 0, out, 0, len.length);
+			System.arraycopy(comp, 0, out, len.length, total);
+			return out;
+		} finally {
+			deflater.end();
+		}
+	}
+
 	private byte[] handleDecompression(byte[] pkt) throws IOException {
 		int[] uncompressedLen = readVarInt(pkt, 0, pkt.length);
 		if (uncompressedLen == null) throw new IOException(ConnectErrorCodes.mwc(ConnectErrorCodes.Play.COMPRESSION,
@@ -555,12 +636,20 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 		try {
 			inflater.setInput(comp);
 			byte[] out = new byte[dataLen];
-			int got = inflater.inflate(out);
-			if (got != dataLen) throw new IOException(ConnectErrorCodes.mwc(ConnectErrorCodes.Play.COMPRESSION,
-					"Decompressed size mismatch (" + got + "/" + dataLen + "). Retry."));
-			if (!inflater.finished() && inflater.getRemaining() > 0) {
-				// Extra bytes shouldn't happen for single-packet frames; ignore.
+			int total = 0;
+			while (total < dataLen) {
+				int n = inflater.inflate(out, total, dataLen - total);
+				if (n == 0) {
+					if (inflater.finished() || inflater.needsDictionary()) break;
+					if (inflater.needsInput()) {
+						throw new IOException(ConnectErrorCodes.mwc(ConnectErrorCodes.Play.COMPRESSION,
+								"Truncated compressed packet from server. Retry."));
+					}
+				}
+				total += n;
 			}
+			if (total != dataLen) throw new IOException(ConnectErrorCodes.mwc(ConnectErrorCodes.Play.COMPRESSION,
+					"Decompressed size mismatch (" + total + "/" + dataLen + "). Retry."));
 			return out;
 		} catch (java.util.zip.DataFormatException e) {
 			throw new IOException(ConnectErrorCodes.mwc(ConnectErrorCodes.Play.COMPRESSION,

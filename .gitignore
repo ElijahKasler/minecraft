@@ -1,0 +1,13 @@
+# Local toolchains / bundled JDKs (Temurin 8 etc.) — large binaries, do not commit
+tools/
+
+# Gradle / build output
+.gradle/
+build/
+
+# Node / bun
+node_modules/
+
+# OS junk
+Thumbs.db
+desktop.ini

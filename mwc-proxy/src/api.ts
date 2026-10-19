@@ -326,14 +326,21 @@ export function createProxyMiddleware(options: ProxyMiddlewareOptions = {}, conn
                 })
             }
 
+            // Only cover the pre-token phase: if the client never attaches its
+            // WebSocket within 6s, drop the TCP socket. Once the tunnel WS
+            // attaches (see /socket handler) this is cleared — a silent
+            // server (online-mode auth, slow login) must not be killed.
             socket.setTimeout(1000 * 6)
             socket.on('timeout', () => {
                 cleanupPendingConnection()
                 if (!res.finished) {
+                    myLog(`[T] TCP connect stalled >6s for ${host}:${port}, aborting`)
                     res.status(504).send({
                         code: 504,
                         error: `Connection timed out. Ensure the server ${host} is reachable and the port ${port} is open.`
                     });
+                } else {
+                    myLog(`[T] token issued but tunnel never attached within 6s, dropping ${host}:${port}`)
                 }
 
                 socket.end()
@@ -371,10 +378,11 @@ export function createProxyMiddleware(options: ProxyMiddlewareOptions = {}, conn
 
                 // Remove the socket from the list when closed
                 socket.on('close', hadError => {
+                    const rcvd = (socket as any).rcvdBytes | 0
                     myLog(
                         `[D${hadError ? '-E' : ''}] ${host}:${port} (${
                             activeConnections[token] && (Date.now() - activeConnections[token]!.startTime) / 1000
-                        }, ${token})`,
+                        }, ${token})${rcvd === 0 ? ' - 0 bytes received from server (not a vanilla MC 1.8 server?)' : ` - ${rcvd} bytes received`}`,
                     )
                     if (sockets[token]) {
                         const duration = (Date.now() - activeConnections[token]!.startTime) / 1000
@@ -552,12 +560,20 @@ export function createProxyMiddleware(options: ProxyMiddlewareOptions = {}, conn
 
         if (!sockets[token]) {
             console.warn(`WARN: Unknown TCP connection with token "${token}"`)
+            myLog(`[S] rejected socket upgrade: unknown token "${token}"`)
             ws.close()
             return
         }
 
         const socket = sockets[token]
         //delete sockets[token];
+
+        // Tunnel is live now: cancel the 6s pre-attach idle timer. Silence on
+        // the TCP stream from here on is normal (slow login, idle player) and
+        // must not kill the connection.
+        socket.setTimeout(0)
+
+        myLog(`[S] tunnel attached for token ${token}`)
 
         // myLog(`Forwarding socket with token ${token}`)
 
@@ -573,6 +589,7 @@ export function createProxyMiddleware(options: ProxyMiddlewareOptions = {}, conn
         })
         socket.on('data', chunk => {
             //myLog('Received: ', chunk.toString());
+            ;(socket as any).rcvdBytes = ((socket as any).rcvdBytes | 0) + chunk.length
             // Providing a callback is important, otherwise errors can be thrown
             ws.send(chunk, { binary: true }, err => {})
         })

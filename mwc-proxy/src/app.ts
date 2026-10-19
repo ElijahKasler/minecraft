@@ -124,6 +124,7 @@ const baseOptions: ProxyMiddlewareOptions = {
         maybeRotateAccessLog()
         const ts = new Date().toISOString().replace('T', ' ').split('.')[0]
         accessLog.stream.write(`[${ts}] ${line}\n`)
+        console.log(`[${ts}] ${line}`)
     },
     allowOriginApp: true,
     maxConnectionsPerIp: process.env.MAX_CONNECTIONS_PER_IP ? Number(process.env.MAX_CONNECTIONS_PER_IP) : 5,

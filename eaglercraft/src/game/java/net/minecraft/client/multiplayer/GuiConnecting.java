@@ -241,6 +241,9 @@ public class GuiConnecting extends GuiScreen {
 								}
 							}
 						}
+					} else if (useMwcProxy && mwcHandshaker != null) {
+						// Socket dropped (or finished login) - let it drain/fail.
+						mwcHandshaker.tick();
 					} else if (mwcHandshaker == null && useMwcProxy
 							&& connState == EnumEaglerConnectionState.FAILED) {
 						// mwc socket died before the handshaker object existed

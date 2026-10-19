@@ -2,8 +2,12 @@
 setlocal
 set "ROOT=%~dp0"
 
-REM Start Minecraft 1.8.8 server in background
-start /b "" cmd /c "cd /d %ROOT%server && java -jar server.jar --nogui"
+REM Start Minecraft 1.8.8 server in background (prefer bundled Temurin 8, fall back to PATH java)
+if exist "%ROOT%tools\temurin8\bin\java.exe" (
+  start /b "" cmd /c "cd /d %ROOT%server && "%ROOT%tools\temurin8\bin\java.exe" -Xms1G -Xmx1G -jar server.jar --nogui"
+) else (
+  start /b "" cmd /c "cd /d %ROOT%server && java -jar server.jar --nogui"
+)
 
 if not exist "%ROOT%mwc-proxy\env.js" (
   copy /Y "%ROOT%eagler-mwc-integration\config\mwc-proxy.env.js" "%ROOT%mwc-proxy\env.js" >nul

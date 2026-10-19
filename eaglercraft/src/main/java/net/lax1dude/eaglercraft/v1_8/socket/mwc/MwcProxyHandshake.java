@@ -164,7 +164,14 @@ public class MwcProxyHandshake {
 	private final MwcProxyNetworkManager networkManager;
 
 	private boolean finished = false;
+	private boolean enteredPlay = false;
 	private int ticks = 0;
+	private int connectedTicks = 0;
+	private boolean loggedConnected = false;
+	private boolean loggedLoginSent = false;
+
+	/** No Login Success within this after WS open -> fail with stage info. */
+	private static final int LOGIN_TIMEOUT_TICKS = 25 * 20;
 
 	public static MwcProxyHandshake connect(Minecraft mc, GuiScreen prevScreen, GuiScreen progressScreen,
 			String proxySocketUrl, String mcHost, int mcPort, String username) {
@@ -198,7 +205,18 @@ public class MwcProxyHandshake {
 
 	/** Call every client tick from the connecting screen. */
 	public void tick() {
-		if (finished) return;
+		if (finished) {
+			// Login already succeeded. Keep draining the tunnel each tick until
+			// Join Game is processed: that creates the world and swaps the screen
+			// to GuiDownloadTerrain, after which Minecraft.runTick's world loop
+			// (PlayerControllerMP.updateController) pumps packets on its own.
+			// Without this the client would sit on "Logging in..." forever and
+			// never answer KeepAlive, so the server times the session out.
+			if (enteredPlay) {
+				pumpPlay();
+			}
+			return;
+		}
 		++ticks;
 		try {
 			switch (websocket.getState()) {
@@ -210,12 +228,25 @@ public class MwcProxyHandshake {
 				case CLOSED:
 					if (networkManager.getDisconnectReason() != null) {
 						fail(null, networkManager.getDisconnectReason());
+					} else if (!networkManager.hasReceivedTunnelData()) {
+						fail("connect.failed", ConnectErrorCodes.mwc(ConnectErrorCodes.Play.CLOSED,
+								"The server closed the connection without sending a single byte.\n"
+										+ "Fix: it is likely NOT a vanilla Minecraft 1.8 server (e.g. a 1.7.x or"
+										+ " Eaglercraft server). The MWC proxy requires a vanilla MC 1.8"
+										+ " (protocol 47) server. Check the server console."));
 					} else {
 						fail("connect.failed", ConnectErrorCodes.mwc(ConnectErrorCodes.Play.CLOSED,
-								"Proxy socket closed before login. Token expired? Rejoin from the menu."));
+								"Proxy tunnel closed before login completed.\n"
+										+ "The proxy or the target server dropped the connection"
+										+ (loggedLoginSent ? " after Login Start was sent" : "") + ".\n"
+										+ "Fix: check the proxy console/access.log and the server console, then retry."));
 					}
 					return;
 				case CONNECTED:
+					if (!loggedConnected) {
+						loggedConnected = true;
+						logger.info("MWC tunnel WebSocket connected: {}", websocket.getCurrentURI());
+					}
 					break;
 			}
 			if (!networkManager.isLoginFinished()) {
@@ -224,12 +255,35 @@ public class MwcProxyHandshake {
 					fail(null, networkManager.getDisconnectReason());
 					return;
 				}
+				++connectedTicks;
+				String stage = networkManager.describeLoginStage();
+				if (!loggedLoginSent && networkManager.getLoginState() == MwcProxyNetworkManager.MwcLoginState.AWAIT_LOGIN) {
+					loggedLoginSent = true;
+					logger.info("Login Start sent to {}:{} as \"{}\", awaiting server reply", mcHost, mcPort,
+							username);
+				}
+				if (connectedTicks % 100 == 0 && connectedTicks > 0) {
+					logger.info("Still awaiting login from {}:{} (stage: {}, {}s elapsed)", mcHost, mcPort, stage,
+							connectedTicks / 20);
+				}
+				if (connectedTicks > LOGIN_TIMEOUT_TICKS) {
+					String hint = networkManager.hasReceivedTunnelData()
+							? "Fix: the server may be doing a slow online-mode (premium) auth, or it stopped"
+									+ " answering mid-login. Check the server console; retry."
+							: "Fix: the server accepted the connection but never sent a single byte — it is"
+									+ " likely NOT a vanilla Minecraft 1.8 server (e.g. a 1.7.x or Eaglercraft"
+									+ " server). The MWC proxy requires a vanilla MC 1.8 (protocol 47) server.";
+					fail("connect.timeout", ConnectErrorCodes.mwc(ConnectErrorCodes.Play.TIMEOUT,
+							"Server did not complete login within 25s.\n" + "Stage: " + stage + "\n" + "Target: "
+									+ mcHost + ":" + mcPort + "\n" + hint));
+					return;
+				}
 				return;
 			}
 			// Login complete -> enter PLAY like HandshakerHandler.handleSuccess, but vanilla.
 			finish();
 		} catch (Exception ex) {
-			logger.error("MWC handshake failed");
+			logger.error("MWC handshake failed (stage: {})", networkManager.describeLoginStage());
 			logger.error(ex);
 			if (networkManager.getDisconnectReason() != null) {
 				fail(null, networkManager.getDisconnectReason());
@@ -242,6 +296,7 @@ public class MwcProxyHandshake {
 	private void finish() {
 		if (finished) return;
 		finished = true;
+		enteredPlay = true;
 		websocket.setEnableStringFrames(false);
 		websocket.clearStringFrames();
 		// Use real UUID/name from Login Success if online mode, else offline UUID.
@@ -261,6 +316,27 @@ public class MwcProxyHandshake {
 				net.lax1dude.eaglercraft.v1_8.socket.protocol.GamePluginMessageProtocol.getByVersion(5));
 		networkManager.setInjectedMessageController(null);
 		mc.clearTitles();
+	}
+
+	/**
+	 * Once login is done we are still the active connecting screen until Join Game
+	 * arrives, so keep the tunnel drained. Failures here surface directly because
+	 * {@link #fail} no-ops after {@link #finished} is set.
+	 */
+	private void pumpPlay() {
+		try {
+			networkManager.processReceivedPackets();
+		} catch (Exception ex) {
+			logger.error("MWC play packet pump failed", ex);
+			try {
+				websocket.close();
+			} catch (Throwable t) {
+			}
+			if (mc.currentScreen == this.parentProgress) {
+				mc.displayGuiScreen(new GuiDisconnected(prevScreen, "connect.failed", new ChatComponentText(
+						ex.getMessage() != null ? ex.getMessage() : "Play packet pump failed")));
+			}
+		}
 	}
 
 	private void fail(String transKey, String detail) {

@@ -1,12 +1,13 @@
-[20:19:20] [Server thread/INFO]: Starting minecraft server version 1.7.10
-[20:19:20] [Server thread/INFO]: Loading properties
-[20:19:20] [Server thread/INFO]: Default game type: SURVIVAL
-[20:19:20] [Server thread/INFO]: Generating keypair
-[20:19:20] [Server thread/INFO]: Starting Minecraft server on *:25565
-[20:19:20] [Server thread/WARN]: **** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!
-[20:19:20] [Server thread/WARN]: The server will make no attempt to authenticate usernames. Beware.
-[20:19:20] [Server thread/WARN]: While this makes the game possible to play without internet access, it also opens up the ability for hackers to connect with any username they choose.
-[20:19:20] [Server thread/WARN]: To change this, set "online-mode" to "true" in the server.properties file.
-[20:19:20] [Server thread/INFO]: Preparing level "world"
-[20:19:20] [Server thread/INFO]: Preparing start region for level 0
-[20:19:20] [Server thread/INFO]: Done (0.286s)! For help, type "help" or "?"
+[07:55:48] [Server thread/INFO]: Starting minecraft server version 1.8.8
+[07:55:48] [Server thread/INFO]: Loading properties
+[07:55:49] [Server thread/INFO]: Default game type: SURVIVAL
+[07:55:49] [Server thread/INFO]: Generating keypair
+[07:55:49] [Server thread/INFO]: Starting Minecraft server on *:25565
+[07:55:49] [Server thread/INFO]: Using default channel type
+[07:55:49] [Server thread/WARN]: **** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!
+[07:55:49] [Server thread/WARN]: The server will make no attempt to authenticate usernames. Beware.
+[07:55:49] [Server thread/WARN]: While this makes the game possible to play without internet access, it also opens up the ability for hackers to connect with any username they choose.
+[07:55:49] [Server thread/WARN]: To change this, set "online-mode" to "true" in the server.properties file.
+[07:55:49] [Server thread/INFO]: Preparing level "world"
+[07:55:49] [Server thread/INFO]: Preparing start region for level 0
+[07:55:49] [Server thread/INFO]: Done (0.465s)! For help, type "help" or "?"

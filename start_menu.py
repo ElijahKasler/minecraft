@@ -2,8 +2,11 @@
 """
 Eaglercraft + MWC Proxy + Minecraft Server GUI Launcher
 
-Starts / stops all three components from a single tkinter window:
+Starts / stops all components from a single tkinter window:
   - Minecraft 1.8.8 server   (java -jar server.jar --nogui,  port 25565)
+  - ViaProxy                 (java -jar ViaProxy.jar config viaproxy.yml, port 25568)
+                             protocol translation so the 1.8 client can join
+                             1.7 → latest servers
   - MWC proxy                (bun dist/app.js,                port 2344)
   - Eaglercraft desktop client  (gradlew target_lwjgl_desktop:eaglercraftDebugRuntime)
 
@@ -22,29 +25,87 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 SERVER_DIR = os.path.join(ROOT, "server")
 PROXY_DIR = os.path.join(ROOT, "mwc-proxy")
 EAGLER_DIR = os.path.join(ROOT, "eaglercraft")
+VIA_PROXY_DIR = os.path.join(ROOT, "tools", "viaproxy")
 
-SERVER_CMD = ["java", "-jar", "server.jar", "--nogui"]
+JAVA_HOME_LOCAL = os.path.join(ROOT, "tools", "temurin8")
+_JAVA8 = os.path.join(JAVA_HOME_LOCAL, "bin", "java.exe")
+SERVER_JAVA = _JAVA8 if os.path.isfile(_JAVA8) else "java"
+
+# ViaProxy (protocol translation) needs Java 17+; we ship the Java 17 build.
+VIA_PROXY_JAR = os.path.join(VIA_PROXY_DIR, "ViaProxy.jar")
+VIA_PROXY_YML = os.path.join(VIA_PROXY_DIR, "viaproxy.yml")
+VIA_PROXY_JAVA = "java"
+VIA_PROXY_BIND = "127.0.0.1:25568"
+VIA_PROXY_TARGET = "127.0.0.1:25565"
+
+SERVER_CMD = [SERVER_JAVA, "-Xms1G", "-Xmx1G", "-jar", "server.jar", "--nogui"]
 PROXY_CMD = ["bun", "dist/app.js"]
 EAGLER_CMD = ["gradlew", "target_lwjgl_desktop:eaglercraftDebugRuntime"]
+VIA_PROXY_CMD = [
+    VIA_PROXY_JAVA,
+    "-DskipUpdateCheck=1",
+    "-DignoreSystemRequirements=1",
+    "-jar",
+    "ViaProxy.jar",
+    "config",
+    "viaproxy.yml",
+]
 
 ENV_SERVER = os.environ.copy()
 ENV_PROXY = os.environ.copy()
 ENV_PROXY["PORT"] = "2344"
 ENV_PROXY["DISABLE_SIGNAL"] = "1"
+ENV_VIA_PROXY = os.environ.copy()
+ENV_VIA_PROXY["VP_RUN_DIR"] = VIA_PROXY_DIR
 
-PORT_MAP = {"server": 25565, "proxy": 2344}
+PORT_MAP = {"server": 25565, "proxy": 2344, "viaproxy": 25568}
 
 COMPONENT_LABELS = {
     "server": "Minecraft 1.8.8 Server",
     "proxy": "MWC Proxy",
+    "viaproxy": "ViaProxy (Version Translator)",
     "client": "Eaglercraft Desktop Client",
 }
 
 COMPONENT_PORTS = {
     "server": "25565",
     "proxy": "2344",
+    "viaproxy": "25568",
     "client": "foreground",
 }
+
+
+def write_viaproxy_config(target: str, bind: str):
+    """Rewrite bind-address / target-address in tools/viaproxy/viaproxy.yml.
+
+    Creates the file if it does not exist yet so ViaProxy can start headless
+    on first run (otherwise ViaProxy only generates a config and exits).
+    """
+    def set_key(lines, key, value):
+        out = []
+        found = False
+        for ln in lines:
+            if ln.lstrip().startswith(key + ":"):
+                out.append(f"{key}: {value}\n")
+                found = True
+            else:
+                out.append(ln)
+        if not found:
+            out.append(f"{key}: {value}\n")
+        return out
+
+    try:
+        if os.path.isfile(VIA_PROXY_YML):
+            with open(VIA_PROXY_YML, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        else:
+            lines = []
+        lines = set_key(lines, "bind-address", bind)
+        lines = set_key(lines, "target-address", target)
+        with open(VIA_PROXY_YML, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    except Exception as e:
+        print(f"[viaproxy] could not write config: {e}")
 
 
 def free_port(port: int):
@@ -84,9 +145,11 @@ class LauncherApp:
         self.root.geometry("900x600")
         self.root.minsize(700, 450)
 
-        self.procs = {"server": None, "proxy": None, "client": None}
+        self.procs = {"server": None, "proxy": None, "viaproxy": None, "client": None}
         self._queues = {}
         self.threads = {}
+        self.viaproxy_target_var = None
+        self.viaproxy_bind_var = None
 
         self._build_ui()
         self._poll_queues()
@@ -104,6 +167,7 @@ class LauncherApp:
         comps = [
             ("server", COMPONENT_LABELS["server"], SERVER_DIR, COMPONENT_PORTS["server"]),
             ("proxy", COMPONENT_LABELS["proxy"], PROXY_DIR, COMPONENT_PORTS["proxy"]),
+            ("viaproxy", COMPONENT_LABELS["viaproxy"], VIA_PROXY_DIR, COMPONENT_PORTS["viaproxy"]),
             ("client", COMPONENT_LABELS["client"], EAGLER_DIR, COMPONENT_PORTS["client"]),
         ]
 
@@ -141,6 +205,22 @@ class LauncherApp:
         ttk.Button(g, text="Open Multiplayer Help", width=22,
                    command=self.show_help).pack(side=tk.LEFT, padx=5)
 
+        # ViaProxy settings (used when starting the version translator)
+        vp = ttk.LabelFrame(top, text="ViaProxy — join servers of other versions (1.7 to latest)",
+                            padding=6)
+        vp.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(vp, text="Translate to (host:port):").grid(row=0, column=0, sticky=tk.W)
+        self.viaproxy_target_var = tk.StringVar(value=VIA_PROXY_TARGET)
+        ttk.Entry(vp, textvariable=self.viaproxy_target_var, width=32).grid(
+            row=0, column=1, sticky=tk.W, padx=(6, 16))
+        ttk.Label(vp, text="Listen (host:port):").grid(row=0, column=2, sticky=tk.W)
+        self.viaproxy_bind_var = tk.StringVar(value=VIA_PROXY_BIND)
+        ttk.Entry(vp, textvariable=self.viaproxy_bind_var, width=20).grid(
+            row=0, column=3, sticky=tk.W, padx=(6, 0))
+        ttk.Label(vp, foreground="#888888",
+                  text="Then join the server in-game as:  proxy://127.0.0.1:25568").grid(
+            row=1, column=0, columnspan=4, sticky=tk.W, pady=(4, 0))
+
         # Separate log area per component
         nb = ttk.Notebook(self.root)
         nb.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
@@ -152,7 +232,7 @@ class LauncherApp:
             "client": "#3a3a1e",   # dark olive
         }
 
-        for key in ("server", "proxy", "client"):
+        for key in ("server", "proxy", "viaproxy", "client"):
             frame = ttk.Frame(nb)
             nb.add(frame, text=COMPONENT_LABELS[key])
             txt = scrolledtext.ScrolledText(frame, wrap=tk.WORD,
@@ -218,6 +298,14 @@ class LauncherApp:
             cwd = PROXY_DIR
             cmd = PROXY_CMD
             env = ENV_PROXY
+        elif key == "viaproxy":
+            cwd = VIA_PROXY_DIR
+            cmd = VIA_PROXY_CMD
+            env = ENV_VIA_PROXY
+            target = (self.viaproxy_target_var.get() or VIA_PROXY_TARGET).strip()
+            bind = (self.viaproxy_bind_var.get() or VIA_PROXY_BIND).strip()
+            write_viaproxy_config(target, bind)
+            self._log_proc("viaproxy", f"translating -> {target} (listening on {bind})")
         else:
             cwd = EAGLER_DIR
             cmd = EAGLER_CMD
@@ -296,13 +384,13 @@ class LauncherApp:
         self._log_proc(key, "stopped")
 
     def start_all(self):
-        for k in ("server", "proxy", "client"):
+        for k in ("server", "viaproxy", "proxy", "client"):
             if not self._is_running(k):
                 self.start_component(k)
                 self.root.after(500)
 
     def stop_all(self):
-        for k in ("client", "proxy", "server"):
+        for k in ("client", "proxy", "viaproxy", "server"):
             if self._is_running(k):
                 self.stop_component(k)
 
@@ -329,12 +417,20 @@ class LauncherApp:
     # ---------- misc ----------
     def show_help(self):
         msg = (
-            "How to connect:\n"
+            "How to connect (same version, straight to the server):\n"
             "1. Start the server (port 25565) — make sure eula.txt = true.\n"
             "2. Start the MWC proxy (port 2344).\n"
             "3. Start the Eaglercraft client.\n"
             "4. In-game: Multiplayer → 'Vanilla via Proxy...' → localhost:25565.\n"
-            "5. Press J in an inventory to open JEI."
+            "5. Press J in an inventory to open JEI.\n"
+            "\n"
+            "How to join servers of OTHER versions (1.7 → latest):\n"
+            "1. Set 'Translate to (host:port)' to the real server you want to join.\n"
+            "2. Start the 'ViaProxy (Version Translator)' component.\n"
+            "3. Start the MWC proxy and the client as usual.\n"
+            "4. Join in-game as: proxy://127.0.0.1:25568\n"
+            "   (or whatever 'Listen' address you set — ViaProxy translates the\n"
+            "    protocol so this 1.8 client can play on newer/older servers.)"
         )
         messagebox.showinfo("Connection help", msg)
 
@@ -356,6 +452,10 @@ def main():
         gw = "gradlew.bat" if sys.platform == "win32" else "gradlew"
         if not os.path.isfile(os.path.join(EAGLER_DIR, gw)):
             missing.append(f"eaglercraft/{gw}")
+
+    if not os.path.isfile(VIA_PROXY_JAR):
+        print(f"[launcher] Note: ViaProxy jar not found at {VIA_PROXY_JAR}; "
+              f"the version-translator component will not work.")
 
     if missing:
         root = tk.Tk()

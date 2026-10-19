@@ -74,7 +74,18 @@ class WebSocketClientImpl extends WebSocketClient {
 
 	@Override
 	public void onMessage(ByteBuffer arg0) {
-		clientObj.handleBytes(arg0.array());
+		byte[] data;
+		if (arg0.hasArray() && arg0.arrayOffset() == 0 && arg0.position() == 0
+				&& arg0.remaining() == arg0.array().length) {
+			data = arg0.array();
+		} else {
+			// sliced/offset buffer: copy only the remaining bytes, never the
+			// whole backing array (that corrupts the MC packet stream)
+			ByteBuffer dup = arg0.duplicate();
+			data = new byte[dup.remaining()];
+			dup.get(data);
+		}
+		clientObj.handleBytes(data);
 	}
 
 }

@@ -28,6 +28,7 @@
 **Changes:**
 - Raw vanilla TCP tunneled over MWC proxy WebSocket (VarInt framing, reassembly, 1.8 handshake protocol 47 + Login Start).
 - Set Compression support; `proxy-shutdown:` surfacing.
+- **Full vanilla 1.8 compression framing** (see §6c): a frame is `[dataLength VarInt][data]` where `dataLength == 0` means the raw packet follows and otherwise it is the **uncompressed** size of a zlib stream. Applied to **both** login-phase and play-phase inbound packets, and to **all** outbound packets once the threshold is negotiated (`compressOutboundFrame`).
 - `MwcProxyTokenFetch` performs pure-Java `POST /api/vm/net/connect` (no JS bridge needed).
 - `MwcProxyHandshake` supports `#mchost=&mcport=&user=` URL fragment parsing (shareable links).
 
@@ -83,6 +84,34 @@
 - **Server-list ping failures show detail:** `MwcProxyStatusQuery.publishError()` publishes a MOTD response with `§c[CODE] reason` / `§g Fix: ...` lines on every failure path (token, socket open/close/timeout, no response, crash); `ServerData.setMOTDFromQuery` marks those as `pingToServer=-1` (red X).
 - **Root-cause fix:** `GameSettings` loaded `mwcProxyBase` via `split(":")`, truncating `mwcProxyBase:http://localhost:2344` to `http` (caused `UnknownHostException: http`). Now parsed as substring-after-first-colon + validated (`://` or `host:port`, else reset to default); valueless option lines are skipped (kills `Skipping bad option: lastServer:` spam).
 
+### 6b. Tunnel lifetime + login stall diagnostics (fixed "stuck on Logging in / 30s timeout / no proxy logs")
+**Proxy (`mwc-proxy/src/api.ts`, rebuilt to `dist/` via `bun run build`):**
+- **Root cause of login stalls:** `socket.setTimeout(1000 * 6)` stayed active for the whole tunnel lifetime and its handler called `socket.end()` — any 6s of TCP silence (slow server login, online-mode Mojang auth) killed the tunnel. Now the 6s timer only covers the pre-attach window (token issued, client WS never attached); the `/socket` handler calls `socket.setTimeout(0)` on attach.
+- **"No proxy logs" fixed:** proxy logs went only to `dist/logs/access.log`. `app.ts` `log()` now mirrors every line to the console: `[C]` connect request, `[U]` token issued, `[S]` tunnel attached / rejected token, `[T]` timeout drops, `[D]` disconnect.
+- Verified live: token + WS attach + 9s idle + data send — tunnel stays open (previously died at 6s); full lifecycle visible on console.
+
+**Client:**
+- `MwcProxyHandshake`: staged 25s login timeout — on stall, disconnect shows the exact stage (`describeLoginStage()`: handshake/login-start sent, Yggdrasil auth in progress, encryption response sent...) + target `host:port` + fix text. Progress logs every 5s while waiting; logs WS connected / Login Start sent.
+- `MwcProxyNetworkManager`: `describeLoginStage()`; logs handshake/login-start sends and first tunnel data from the server (bytes + frames).
+- `WebSocketClientImpl.onMessage(ByteBuffer)`: no longer uses `array()` blindly (corrupted frames when the buffer was a slice); copies only `remaining()` bytes.
+- Tunnel-close-before-login message no longer blames "Token expired?" — now says the proxy or server dropped the connection and points at the proxy console/access.log.
+
+### 6c. Vanilla 1.8 packet compression (fixed the "This client is 1.8" join failure)
+**Symptom:** joining a 1.8.8 server through the proxy showed the disconnect text `... (Version mismatch? This client is 1.8. ...)` even though the server logged `<player> joined the game`.
+
+**Root cause (two bugs in `MwcProxyNetworkManager`):**
+1. **Inbound:** the login-phase pump (`pumpTcpFrames(true)`) dispatched packets to `handleLoginPacket` *without* running compression handling (only the play branch called `handleDecompression`). A vanilla 1.8.8 server always sends `Set Compression (0x03, default threshold 256)` right after Login Start, then sends **Login Success below the threshold as a marker-0 frame** (`[0x00][0x02 ...]`). The client read the `0x00` marker as packet id `0x00` = *Disconnect (login)*, parsed the UUID string as the kick reason, and surfaced it with our version-mismatch hint.
+2. **Outbound:** `sendPacket`/`injectRawFrame` never applied compression framing, so after the threshold was negotiated the vanilla server's decompressor saw garbage (e.g. a KeepAlive reply `[0x00 id][long]` reads as the `0x00` marker with a truncated packet) — the session would be dropped right after spawn.
+
+**Fix:**
+- `pumpTcpFrames`: decrypt (if encrypted) then decompress (if `compressionThreshold >= 0`) **before** dispatching, for both login and play branches.
+- New `compressOutboundFrame(payload)`: `< threshold` → `[0x00][payload]`; otherwise `VarInt(uncompressed length) + zlib(payload)` using `java.util.zip.Deflater` (fresh stream per packet, `finish()`ed).
+- `sendRawPlayPayload` now compresses first, then encrypts (`MwcCrypto.aesCtr`) — matching the wire order `frame(encrypt(compress(packet)))`. The encrypt step was moved out of `sendPacket`/`injectRawFrame` into `sendRawPlayPayload`.
+- `handleDecompression` hardened to inflate in a loop (chunk packets decompress to ~800 KB) and to report truncation/size mismatch.
+- Online-mode: encryption is now enabled in the auth `onSuccess` callback (before the Encryption Response is sent) because vanilla turns its cipher on immediately after validating the response, so `Set Compression` + `Login Success` arrive **encrypted**. Counter resets at Login Success were removed (they would desync the stream).
+
+**Verified against a real vanilla 1.8.8 server through the proxy:** Set Compression parsed, Login Success decompressed, 44 chunk packets (id `0x26`, ~826 KB inflated each) decompressed, 22/22 KeepAlives answered over 40 s with the connection staying open, and serverbound `Chat` delivered (`<FixProbe> hello from FixProbe` in the server log).
+
 ### 7. Python GUI launcher — `start_menu.py`
 - Separate console tab per component (Server, Proxy, Client).
 - Individual Start/Stop + Start All / Stop All buttons.
@@ -90,6 +119,7 @@
 - Auto-kills anything already bound to port 25565 / 2344 before starting.
 - Startup validation for missing files (`server.jar`, `mwc-proxy/dist/app.js`, `gradlew.bat`).
 - Connection help dialog.
+- **Bundled server JVM:** `SERVER_CMD` now prefers `tools/temurin8/bin/java.exe` (Temurin 8u504) and falls back to `java` on PATH; `start.bat` does the same. Vanilla 1.8.8 runs on Java 27 too, but JDK 8 is the safe, canonical choice.
 
 ### 8. Python setup downloader — `setup_multiplayer.py`
 - Downloads Minecraft 1.8.8 `server.jar` from Mojang.
@@ -127,7 +157,7 @@
    - Yggdrasil session join (POST access token + shared secret + public key to session endpoint)
    - RSA encrypt shared secret (already implemented)
 3. **Browser crypto** — Implement AES/CTR via `window.crypto.subtle` in `MwcCryptoTeaVM.java` so web builds can connect to online-mode servers without delegating to web-client-next.
-4. **Test end-to-end** — Run `python setup_multiplayer.py` → `python start_menu.py` → Start All → Multiplayer → Add Server `localhost:25565` → join.
+4. **Test end-to-end** — Run `python setup_multiplayer.py` → `python start_menu.py` → Start All → Multiplayer → Add Server `localhost:25565` → join. (Offline 1.8.8 join verified end-to-end through the proxy as of this session; the bundled server JVM is `tools/temurin8`.)
 
 ### Build commands
 ```powershell
