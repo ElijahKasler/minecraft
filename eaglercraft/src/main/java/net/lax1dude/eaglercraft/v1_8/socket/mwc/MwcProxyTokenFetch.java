@@ -49,9 +49,16 @@ public class MwcProxyTokenFetch {
 				}
 				if (done.compareAndSet(false, true)) {
 					TokenResult timeout = new TokenResult();
+					String shownBase;
+					try {
+						shownBase = normalizeBase(proxyBase);
+					} catch (Throwable t2) {
+						shownBase = proxyBase;
+					}
 					timeout.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
 							net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.TIMEOUT,
-							"Proxy token request timed out (30s). Is the proxy running on " + proxyBase + "?");
+							"Proxy token request timed out (30s, 3 attempts).\nProxy: " + shownBase
+									+ "\nFix: check the proxy process and its logs.");
 					try {
 						callback.onComplete(timeout);
 					} catch (Throwable t2) {
@@ -138,13 +145,23 @@ public class MwcProxyTokenFetch {
 	 * open {@code GuiConnecting} with a ServerData holding {@link #socketUrl}.
 	 */
 	public static TokenResult requestToken(String proxyBaseRaw, String mcHost, int mcPort) {
+		return requestToken(proxyBaseRaw, mcHost, mcPort, true);
+	}
+
+	/**
+	 * @param retry when false (server-list MOTD ping), try each base exactly once
+	 *              with no sleeps, so an unreachable proxy fails in milliseconds
+	 *              instead of hammering it with retries
+	 */
+	public static TokenResult requestToken(String proxyBaseRaw, String mcHost, int mcPort, boolean retry) {
 		TokenResult ret = new TokenResult();
 		String httpBase;
 		try {
 			httpBase = normalizeBase(proxyBaseRaw);
 		} catch (Throwable t) {
 			ret.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
-					net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.BAD_URL, "Bad proxy URL.");
+					net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.BAD_URL,
+					"Bad proxy URL: " + proxyBaseRaw + "\nFix: use e.g. http://localhost:2344");
 			return ret;
 		}
 		if (mcHost == null || mcHost.trim().isEmpty()) {
@@ -163,30 +180,68 @@ public class MwcProxyTokenFetch {
 
 		String resp = null;
 		String lastErr = null;
-		for (String base : bases) {
+		String lastCode = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.UNREACHABLE;
+		int attempts = retry ? 3 : 1;
+		for (int bi = 0; bi < bases.length && resp == null; ++bi) {
+			String base = bases[bi];
 			String url = base + "/api/vm/net/connect";
-			for (int attempt = 0; attempt < 3; attempt++) {
+			for (int attempt = 0; attempt < attempts && resp == null; attempt++) {
+				String raw = null;
+				boolean threw = false;
 				try {
-					resp = PlatformRuntime.postJSON(url, body);
-					if (resp != null) {
-						break; // got a response (even an error response from the proxy)
-					}
+					raw = PlatformRuntime.postJSON(url, body);
 				} catch (Throwable t) {
-					lastErr = t.toString();
-					logger.warn("Token request attempt {} to {} failed: {}", attempt + 1, url, t.toString());
+					threw = true;
+					lastErr = t.getClass().getSimpleName() + ": " + t.getMessage();
+					lastCode = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.classifyTransportError(lastErr);
+					logger.warn("Token request attempt {} to {} threw: [{}] {}", attempt + 1, url, lastCode, lastErr);
 				}
-				try { Thread.sleep(500); } catch (Throwable t) {}
+				if (raw != null) {
+					int nl = raw.indexOf('\n');
+					int st = 200;
+					String payload = raw;
+					if (nl >= 0) {
+						try {
+							st = Integer.parseInt(raw.substring(0, nl).trim());
+							payload = raw.substring(nl + 1);
+						} catch (Throwable t) {
+							st = 200;
+						}
+					}
+					if (st <= 0) {
+						// 0 = browser network/CORS failure, -1 = desktop transport failure marker
+						lastErr = payload.trim();
+						if (lastErr.isEmpty()) {
+							lastErr = st == 0 ? "no HTTP response (offline, request blocked, or proxy not running)"
+									: "no HTTP response from proxy";
+						}
+						lastCode = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.classifyTransportError(
+								lastErr);
+						logger.warn("Token request attempt {} to {} failed: [{}] {}", attempt + 1, url, lastCode,
+								lastErr);
+					} else {
+						resp = raw; // got a real HTTP response (even an error response from the proxy)
+					}
+				} else if (!threw) {
+					lastErr = "no response (offline mode, request blocked, or proxy not running)";
+					lastCode = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.UNREACHABLE;
+					logger.warn("Token request attempt {} to {} returned no response", attempt + 1, url);
+				}
+				if (resp == null && retry) {
+					try {
+						Thread.sleep(500l);
+					} catch (Throwable t) {
+					}
+				}
 			}
 			if (resp != null) {
 				httpBase = base; // remember which base worked
-				break;
 			}
 		}
 
 		if (resp == null) {
-			ret.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
-					net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.UNREACHABLE,
-					"Could not reach proxy. Is it running on " + httpBase + "? Last error: " + lastErr);
+			ret.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.describeUnreachableProxy(httpBase,
+					lastCode, lastErr);
 			return ret;
 		}
 
@@ -206,40 +261,49 @@ public class MwcProxyTokenFetch {
 		if (status == 429) {
 			ret.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
 					net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.RATE_LIMITED,
-					"Too many connections from this IP. Wait a bit or try another proxy.");
+					"Too many connections from this IP.\nFix: wait a minute, or try another proxy.");
 			return ret;
 		}
 		if (status == 403) {
 			ret.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
 					net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.FORBIDDEN,
-					"Proxy refused: destination not on its allowlist.");
+					"Proxy refused this destination: " + mcHost.trim() + ":" + mcPort
+							+ "\nFix: ask the proxy owner to allow it on their allowlist.");
 			return ret;
 		}
-		if (status != 200 && status != 0) {
+		if (status != 200) {
 			String detail = "";
 			try {
 				JSONObject err = new JSONObject(payload);
 				detail = err.optString("error", "");
 			} catch (Throwable t) {
 			}
+			if (detail.isEmpty()) {
+				String pl = payload.trim();
+				detail = pl.isEmpty() ? "" : (pl.length() > 120 ? pl.substring(0, 117) + "..." : pl);
+			}
 			ret.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
 					net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.HTTP + "-" + status,
-					detail.isEmpty() ? "Proxy request failed." : detail);
+					(detail.isEmpty() ? "Proxy request failed." : detail)
+							+ "\nFix: the proxy answered with an HTTP error; check its address and logs.");
 			return ret;
 		}
 		String token;
 		try {
 			token = new JSONObject(payload).getString("token");
 		} catch (Throwable t) {
+			String pl = payload.trim();
 			ret.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
 					net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.BAD_RESPONSE,
-					"Proxy answered without a token.");
+					"Proxy answered without a token."
+							+ (pl.isEmpty() ? "" : "\nBody: " + (pl.length() > 120 ? pl.substring(0, 117) + "..." : pl))
+							+ "\nFix: this URL may not be an mwc-proxy; check Proxy Settings.");
 			return ret;
 		}
 		if (token == null || token.isEmpty()) {
 			ret.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
 					net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.BAD_RESPONSE,
-					"Proxy answered without a token.");
+					"Proxy answered with an empty token.\nFix: restart the proxy; check its logs.");
 			return ret;
 		}
 		ret.ok = true;

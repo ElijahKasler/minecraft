@@ -73,10 +73,15 @@
 
 **Controls:** type to search · wheel to scroll · left-click in creative = take full stack · right-click/R = recipes · middle/U = uses · J or [x] hides.
 
-### 6. Connect error codes
+### 6. Connect error codes + proxy diagnostics
 **File:** `src/main/java/net/lax1dude/eaglercraft/v1_8/socket/ConnectErrorCodes.java`
 - `EAG-001`..`EAG-009` cause+fix texts for handshake errors.
-- `MWC-TOKEN-*`, `MWC-HTTP-*`, `MC-LOGIN-*`, `MC-COMPRESS`, `MC-FRAME`, `MC-TIMEOUT`, `MC-CLOSED` prefixes.
+- `MWC-TOKEN-*` (incl. new `DNS`/`REFUSED`/`TLS`), `MWC-SOCKET`, `MWC-HTTP-*`, `MC-LOGIN-*`, `MC-COMPRESS`, `MC-FRAME`, `MC-ENCRYPT`, `MC-AUTH`, `MC-TIMEOUT`, `MC-CLOSED` prefixes.
+- `classifyTransportError(detail)` maps transport failure strings to a code; `describeUnreachableProxy(base, code, cause)` builds the full cause+fix disconnect text.
+- Desktop `PlatformRuntime.postJSON` returns `-1\n<Exception: message>` on transport failure (was `null`), so disconnects show the real cause (DNS, refused, timeout, TLS).
+- `MwcProxyTokenFetch.requestToken(base, host, port, retry)`: `retry=false` (used by the server-list ping) tries each base once with no sleeps; retries classify each failure and keep `lastCode`/`lastErr`.
+- **Server-list ping failures show detail:** `MwcProxyStatusQuery.publishError()` publishes a MOTD response with `§c[CODE] reason` / `§g Fix: ...` lines on every failure path (token, socket open/close/timeout, no response, crash); `ServerData.setMOTDFromQuery` marks those as `pingToServer=-1` (red X).
+- **Root-cause fix:** `GameSettings` loaded `mwcProxyBase` via `split(":")`, truncating `mwcProxyBase:http://localhost:2344` to `http` (caused `UnknownHostException: http`). Now parsed as substring-after-first-colon + validated (`://` or `host:port`, else reset to default); valueless option lines are skipped (kills `Skipping bad option: lastServer:` spam).
 
 ### 7. Python GUI launcher — `start_menu.py`
 - Separate console tab per component (Server, Proxy, Client).

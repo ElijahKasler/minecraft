@@ -215,6 +215,7 @@ public class ServerData {
 			}
 		} catch (Throwable t) {
 			pingToServer = -1l;
+			hasPing = true;
 			logger.error("Could not decode QueryResponse from: {}", serverIP);
 			logger.error(t);
 		}

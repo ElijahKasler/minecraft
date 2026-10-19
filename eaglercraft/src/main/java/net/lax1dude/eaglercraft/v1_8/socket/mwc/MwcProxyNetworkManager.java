@@ -283,8 +283,10 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 							sendEncryptionResponse(state);
 						} catch (IOException e) {
 							logger.error("Failed to send encryption response", e);
-							disconnectReason = new ChatComponentText(
-									"Failed to send encryption response: " + e.getMessage());
+							disconnectReason = new ChatComponentText(ConnectErrorCodes.mwc(
+									ConnectErrorCodes.Play.ENCRYPTION,
+									"Failed to send encryption response: " + e.getMessage()
+											+ "\nFix: retry; a VPN/antivirus/firewall may be breaking the connection."));
 							doClientDisconnect(disconnectReason);
 						}
 					}
@@ -292,9 +294,11 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 					@Override
 					public void onFailure(MwcAuthState state, String reason) {
 						logger.error("Online authentication failed: {}", reason);
-						disconnectReason = new ChatComponentText(
-								"Online authentication failed: " + reason +
-								"\nIf you are using a cracked client, set the server to offline mode.");
+						disconnectReason = new ChatComponentText(ConnectErrorCodes.mwc(
+								ConnectErrorCodes.Play.AUTH,
+								"Online authentication failed: " + reason
+										+ "\nFix: if the server is cracked/offline-mode, set it to offline mode;"
+										+ " otherwise check your network and retry."));
 						doClientDisconnect(disconnectReason);
 					}
 				});

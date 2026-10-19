@@ -1,2 +1,0 @@
-Oct 17, 2026 10:32:58 PM io.netty.util.internal.PlatformDependent <clinit>
-INFO: Your platform does not provide complete low-level API for accessing direct buffers reliably. Unless explicitly requested, heap buffer will always be preferred to avoid potential system unstability.

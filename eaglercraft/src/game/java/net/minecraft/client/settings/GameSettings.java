@@ -810,6 +810,9 @@ public class GameSettings {
 			while ((s = bufferedreader.readLine()) != null) {
 				try {
 					String[] astring = s.split(":");
+					if (astring.length < 2) {
+						continue;
+					}
 					if (astring[0].equals("mouseSensitivity")) {
 						this.mouseSensitivity = this.parseFloat(astring[1]);
 					}
@@ -1215,7 +1218,17 @@ public class GameSettings {
 					}
 
 					if (astring[0].equals("mwcProxyBase")) {
-						mwcProxyBase = astring[1];
+						// keep everything after the first colon: split(":") would truncate
+						// "mwcProxyBase:http://localhost:2344" down to just "http"
+						String v = s.substring(s.indexOf(58) + 1).trim();
+						if (v.indexOf("://") >= 0) {
+							mwcProxyBase = v;
+						} else if (v.indexOf(58) > 0) {
+							mwcProxyBase = "http://" + v;
+						} else {
+							logger.warn("Resetting invalid mwcProxyBase option value: " + v);
+							mwcProxyBase = "http://localhost:2344";
+						}
 					}
 
 					if (astring[0].equals("fastChunkLoading")) {

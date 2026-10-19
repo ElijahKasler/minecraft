@@ -79,7 +79,7 @@ public class ConnectErrorCodes {
 		return "[" + code + "] " + detail;
 	}
 
-	/** Token/HTTP layer codes. */
+	/** Token/HTTP/socket layer codes. */
 	public static final class Token {
 		private Token() {
 		}
@@ -88,6 +88,10 @@ public class ConnectErrorCodes {
 		public static final String NO_SERVER = "MWC-TOKEN-NOSERVER";
 		public static final String UNREACHABLE = "MWC-TOKEN-NET";
 		public static final String TIMEOUT = "MWC-TOKEN-TIMEOUT";
+		public static final String DNS = "MWC-TOKEN-DNS";
+		public static final String REFUSED = "MWC-TOKEN-REFUSED";
+		public static final String TLS = "MWC-TOKEN-TLS";
+		public static final String SOCKET = "MWC-SOCKET";
 		public static final String RATE_LIMITED = "MWC-HTTP-429";
 		public static final String FORBIDDEN = "MWC-HTTP-403";
 		public static final String HTTP = "MWC-HTTP";
@@ -103,8 +107,68 @@ public class ConnectErrorCodes {
 		public static final String ONLINE_MODE = "MC-ONLINE-MODE";
 		public static final String COMPRESSION = "MC-COMPRESS";
 		public static final String FRAME = "MC-FRAME";
+		public static final String ENCRYPTION = "MC-ENCRYPT";
+		public static final String AUTH = "MC-AUTH";
 		public static final String PROXY_SHUTDOWN = "MC-PROXY-DOWN";
 		public static final String TIMEOUT = "MC-TIMEOUT";
 		public static final String CLOSED = "MC-CLOSED";
+	}
+
+	/**
+	 * Classify a transport-level failure (exception string from
+	 * {@link net.lax1dude.eaglercraft.v1_8.internal.PlatformRuntime#postJSON}'s
+	 * {@code -1\n<detail>} marker, or a browser "status 0" response) into a
+	 * {@link Token} code.
+	 *
+	 * @param detail e.g. {@code "UnknownHostException: http"} or
+	 *               {@code "ConnectException: Connection refused"}
+	 */
+	public static String classifyTransportError(String detail) {
+		if (detail == null || detail.isEmpty()) {
+			return Token.UNREACHABLE;
+		}
+		String d = detail.toLowerCase();
+		if (d.contains("unknownhost") || d.contains("no such host") || d.contains("name or service not known")) {
+			return Token.DNS;
+		}
+		if (d.contains("refused")) {
+			return Token.REFUSED;
+		}
+		if (d.contains("timeout") || d.contains("timed out")) {
+			return Token.TIMEOUT;
+		}
+		if (d.contains("ssl") || d.contains("certificate") || d.contains("handshake")) {
+			return Token.TLS;
+		}
+		if (d.contains("broken pipe") || d.contains("connection reset") || d.contains("closed")) {
+			return Token.SOCKET;
+		}
+		return Token.UNREACHABLE;
+	}
+
+	/**
+	 * Full cause+fix disconnect text for a proxy that could not be reached at
+	 * the HTTP layer.
+	 *
+	 * @param proxyBase normalized proxy base actually tried, e.g. {@code http://localhost:2344}
+	 * @param code      a {@link Token} code, usually from {@link #classifyTransportError}
+	 * @param cause     transport detail, may be null
+	 */
+	public static String describeUnreachableProxy(String proxyBase, String code, String cause) {
+		String why = (cause == null || cause.isEmpty()) ? "no response (offline mode, request blocked, or proxy not running)"
+				: cause;
+		String fix;
+		if (Token.DNS.equals(code)) {
+			fix = "Fix: the proxy address does not resolve.\nOpen Proxy Settings and use a full address, e.g. http://localhost:2344";
+		} else if (Token.REFUSED.equals(code)) {
+			fix = "Fix: nothing is listening on that host/port.\nStart the proxy, or correct its port in Proxy Settings.";
+		} else if (Token.TLS.equals(code)) {
+			fix = "Fix: TLS/certificate problem.\nTry http:// instead of https://, or fix the proxy certificate.";
+		} else if (Token.TIMEOUT.equals(code)) {
+			fix = "Fix: the proxy accepted but never answered.\nCheck the proxy process or your network.";
+		} else {
+			fix = "Fix: start the proxy, or correct its address in Proxy Settings (e.g. http://localhost:2344).";
+		}
+		return mwc(code, "Could not reach proxy at " + proxyBase + ".\nCause: " + why + "\n" + fix);
 	}
 }

@@ -623,7 +623,8 @@ public class PlatformRuntime {
 
 	/**
 	 * Synchronous JSON POST for small API calls (mwc-proxy token request).
-	 * Returns "status\nbody" or null on transport failure.
+	 * Returns "status\nbody"; "-1\n<class: message>" when the request never
+	 * got an HTTP response (DNS failure, refused, timeout, TLS...).
 	 */
 	public static String postJSON(String url, String jsonBody) {
 		java.net.HttpURLConnection conn = null;
@@ -654,9 +655,9 @@ public class PlatformRuntime {
 			}
 			return status + "\n" + new String(bao.toByteArray(), StandardCharsets.UTF_8);
 		}catch(Throwable t) {
-			logger.error("postJSON failed!");
-			logger.error(t);
-			return null;
+			logger.warn("postJSON transport failure for {}: {}", url, t.toString());
+			return "-1\n" + t.getClass().getSimpleName() + ": "
+					+ (t.getMessage() != null ? t.getMessage() : "no message");
 		}finally {
 			if(conn != null) {
 				conn.disconnect();

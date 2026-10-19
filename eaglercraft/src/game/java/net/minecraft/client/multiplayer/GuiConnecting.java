@@ -233,7 +233,11 @@ public class GuiConnecting extends GuiScreen {
 									mc.displayGuiScreen(GuiDisconnected.createRateLimitKick(previousGuiScreen));
 								} else {
 									mc.displayGuiScreen(new GuiDisconnected(previousGuiScreen, "connect.failed",
-											new ChatComponentText("Connection Refused")));
+											new ChatComponentText(net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes
+													.mwc(net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Play.CLOSED,
+															"Connection failed or refused.\n"
+																	+ "Fix: verify the address; if this uses a relay,"
+																	+ " try another relay, then retry."))));
 								}
 							}
 						}
@@ -244,7 +248,9 @@ public class GuiConnecting extends GuiScreen {
 						mc.displayGuiScreen(new GuiDisconnected(previousGuiScreen, "connect.failed",
 								new ChatComponentText(net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
 										net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Play.CLOSED,
-										"Proxy socket closed before login. Is the proxy running?"))));
+										"Proxy socket closed before login completed.\n"
+												+ "Fix: check that both the proxy and the target server are"
+												+ " running, then retry."))));
 					}
 				}
 			}
@@ -253,7 +259,11 @@ public class GuiConnecting extends GuiScreen {
 					webSocket.close();
 				}
 				mc.displayGuiScreen(new GuiDisconnected(previousGuiScreen, "connect.failed",
-						new ChatComponentText("Handshake timed out")));
+						new ChatComponentText(net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
+								net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Play.TIMEOUT,
+								"Handshake timed out after " + (useMwcProxy ? "30s" : "10s") + ".\n"
+										+ "The socket opened but the server never answered.\n"
+										+ "Fix: retry; check the server/proxy logs and your network."))));
 			}
 		}
 	}
@@ -300,11 +310,18 @@ public class GuiConnecting extends GuiScreen {
 				return;
 			}
 			if (timer > 700) {
+				String shownBase;
+				try {
+					shownBase = net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcProxyTokenFetch
+							.normalizeBase(mc.gameSettings.mwcProxyBase);
+				} catch (Throwable t2) {
+					shownBase = mc.gameSettings.mwcProxyBase;
+				}
 				mc.displayGuiScreen(new GuiDisconnected(previousGuiScreen, "connect.failed",
 						new ChatComponentText(net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
 								net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.TIMEOUT,
-								"Proxy token request timed out. Is the proxy running on "
-										+ mc.gameSettings.mwcProxyBase + "?"))));
+								"Proxy token request timed out (35s).\nProxy: " + shownBase
+										+ "\nFix: start the proxy or check its process/logs."))));
 			}
 			return;
 		}

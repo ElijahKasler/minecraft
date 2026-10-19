@@ -16,6 +16,7 @@ import net.lax1dude.eaglercraft.v1_8.internal.PlatformNetworking;
 import net.lax1dude.eaglercraft.v1_8.internal.QueryResponse;
 import net.lax1dude.eaglercraft.v1_8.log4j.LogManager;
 import net.lax1dude.eaglercraft.v1_8.log4j.Logger;
+import net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes;
 
 /**
  * Server-list MOTD ping for vanilla servers reached through the mwc proxy.
@@ -68,25 +69,35 @@ public class MwcProxyStatusQuery implements IServerQuery {
 	private void runQuery() {
 		IWebSocketClient ws = null;
 		try {
-			MwcProxyTokenFetch.TokenResult token = MwcProxyTokenFetch.requestToken(proxyBase, host, port);
+			MwcProxyTokenFetch.TokenResult token = MwcProxyTokenFetch.requestToken(proxyBase, host, port, false);
 			if (!token.ok) {
 				logger.info("Status query token failed for {}:{} - {}", host, port, token.error);
+				publishError(token.error, host, port);
 				return;
 			}
 			long deadline = EagRuntime.steadyTimeMillis() + OVERALL_TIMEOUT;
 			ws = PlatformNetworking.openWebSocket(token.socketUrl);
 			if (ws == null) {
 				logger.info("Status query could not open socket to {}", token.socketUrl);
+				publishError(ConnectErrorCodes.mwc(ConnectErrorCodes.Token.SOCKET,
+						"Proxy token was ok but the WebSocket could not be opened.\n"
+								+ "Fix: check the proxy process and its logs."), host, port);
 				return;
 			}
 			while (ws.getState() != EnumEaglerConnectionState.CONNECTED) {
 				EnumEaglerConnectionState st = ws.getState();
 				if (st == EnumEaglerConnectionState.FAILED || st == EnumEaglerConnectionState.CLOSED) {
 					logger.info("Status query socket closed before open for {}:{}", host, port);
+					publishError(ConnectErrorCodes.mwc(ConnectErrorCodes.Token.SOCKET,
+							"Proxy closed the socket before connect finished.\n"
+									+ "Fix: check the proxy and target server logs."), host, port);
 					return;
 				}
 				if (EagRuntime.steadyTimeMillis() > deadline) {
 					logger.info("Status query socket timed out for {}:{}", host, port);
+					publishError(ConnectErrorCodes.mwc(ConnectErrorCodes.Token.TIMEOUT,
+							"Timed out waiting for the proxy socket to open.\n"
+									+ "Fix: the proxy may be overloaded; retry or check its load."), host, port);
 					return;
 				}
 				sleep(25);
@@ -129,9 +140,17 @@ public class MwcProxyStatusQuery implements IServerQuery {
 				publish(json, ping);
 			} else {
 				logger.info("Status query for {}:{} got no response", host, port);
+				publishError(ConnectErrorCodes.mwc(ConnectErrorCodes.Token.SOCKET,
+						"Server sent no status response (socket closed or " + (EagRuntime.steadyTimeMillis() > deadline
+								? "15s timeout hit"
+								: "server does not answer status pings")
+								+ ").\nFix: confirm the address/port and that it is a 1.8-compatible server."),
+						host, port);
 			}
 		} catch (Throwable t) {
 			logger.warn("Status query for {}:{} failed: {}", host, port, t.toString());
+			publishError(ConnectErrorCodes.mwc(ConnectErrorCodes.Token.UNREACHABLE,
+					"Status ping crashed: " + t + "\nFix: retry; check the proxy process logs."), host, port);
 		} finally {
 			if (ws != null) {
 				try {
@@ -326,6 +345,64 @@ public class MwcProxyStatusQuery implements IServerQuery {
 			}
 		}
 		return new int[] { result, numRead };
+	}
+
+	private void publishError(String errorMsg, String host, int port) {
+		try {
+			String err = errorMsg == null ? "" : errorMsg;
+			String code = "[MWC-TOKEN-NET]";
+			String detail = err;
+			int bracket = err.indexOf(']');
+			if (bracket >= 0) {
+				code = err.substring(0, bracket + 1);
+				detail = err.substring(bracket + 1);
+			}
+			// one visual line per MOTD row: fold newlines into spaces
+			String flat = detail.replace('\n', ' ').replace('\r', ' ').replaceAll(" +", " ").trim();
+			if (flat.startsWith(":")) {
+				flat = flat.substring(1).trim();
+			}
+			String summary = flat;
+			String fix = "";
+			int fixIdx = flat.indexOf("Fix:");
+			if (fixIdx > 0) {
+				summary = flat.substring(0, fixIdx).trim();
+				fix = flat.substring(fixIdx).trim();
+			}
+			if (summary.length() > 70) {
+				summary = summary.substring(0, 67) + "...";
+			}
+			if (fix.length() > 70) {
+				fix = fix.substring(0, 67) + "...";
+			}
+			String red = net.minecraft.util.EnumChatFormatting.RED.toString();
+			String gold = net.minecraft.util.EnumChatFormatting.GOLD.toString();
+			String line0 = red + code + (summary.isEmpty() ? "" : " " + summary);
+			String line1 = fix.isEmpty() ? (summary.length() > 70 ? gold + flat.substring(0, 100) : "")
+					: gold + fix;
+			if (line1.isEmpty()) {
+				line1 = gold + "Proxy ping failed - see log";
+			}
+			JSONObject motdData = new JSONObject();
+			motdData.put("motd", new JSONArray(new String[] { line0, line1 }));
+			motdData.put("online", 0);
+			motdData.put("max", 0);
+			motdData.put("players", new JSONArray());
+			motdData.put("icon", false);
+			JSONObject out = new JSONObject();
+			out.put("type", "MOTD");
+			out.put("data", motdData);
+			out.put("vers", "unreachable");
+			out.put("brand", "proxy");
+			out.put("name", host + ":" + port);
+			out.put("time", EagRuntime.steadyTimeMillis());
+			synchronized (queryResponses) {
+				queryResponses.add(new QueryResponse(out, -1l));
+			}
+		} catch (Throwable t) {
+			logger.warn("Could not publish proxy ping error for {}:{}", host, port);
+			logger.warn(t.toString());
+		}
 	}
 
 	private static void sleep(long ms) {
