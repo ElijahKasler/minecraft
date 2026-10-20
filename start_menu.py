@@ -10,15 +10,22 @@ Starts / stops all components from a single tkinter window:
   - MWC proxy                (bun dist/app.js,                port 2344)
   - Eaglercraft desktop client  (gradlew target_lwjgl_desktop:eaglercraftDebugRuntime)
 
+Also has an "Open HTML Client" button which serves the built TeaVM JS client
+(eaglercraft/target_teavm_javascript/javascript) over a local HTTP server,
+because index.html refuses to run from file://.
+
 No external dependencies — uses only the Python standard library.
 """
 
+import functools
+import http.server
 import os
 import sys
 import subprocess
 import threading
 import queue
 import tkinter as tk
+import webbrowser
 from tkinter import ttk, scrolledtext, messagebox
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +33,8 @@ SERVER_DIR = os.path.join(ROOT, "server")
 PROXY_DIR = os.path.join(ROOT, "mwc-proxy")
 EAGLER_DIR = os.path.join(ROOT, "eaglercraft")
 VIA_PROXY_DIR = os.path.join(ROOT, "tools", "viaproxy")
+HTML_DIR = os.path.join(EAGLER_DIR, "target_teavm_javascript", "javascript")
+HTML_PORT = 8090
 
 JAVA_HOME_LOCAL = os.path.join(ROOT, "tools", "temurin8")
 _JAVA8 = os.path.join(JAVA_HOME_LOCAL, "bin", "java.exe")
@@ -150,9 +159,12 @@ class LauncherApp:
         self.threads = {}
         self.viaproxy_target_var = None
         self.viaproxy_bind_var = None
+        self.httpd = None
+        self.html_port = HTML_PORT
 
         self._build_ui()
         self._poll_queues()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -202,6 +214,8 @@ class LauncherApp:
                    command=self.start_all).pack(side=tk.LEFT, padx=5)
         ttk.Button(g, text="Stop All", width=14,
                    command=self.stop_all).pack(side=tk.LEFT, padx=5)
+        ttk.Button(g, text="Open HTML Client", width=18,
+                   command=self.open_html_client).pack(side=tk.LEFT, padx=5)
         ttk.Button(g, text="Open Multiplayer Help", width=22,
                    command=self.show_help).pack(side=tk.LEFT, padx=5)
 
@@ -364,35 +378,70 @@ class LauncherApp:
 
         threading.Thread(target=self._watcher, args=(key, proc), daemon=True).start()
 
+    def _kill_tree(self, key: str, proc):
+        """Kill a process and all of its children.
+
+        Commands are launched through ``cmd.exe`` / ``gradlew.bat`` on Windows,
+        so ``proc.pid`` is the shell, not the real Java/bun process. A plain
+        ``terminate()`` only stops the shell and leaves the game/server/proxy
+        running (and their ports bound). ``taskkill /T`` kills the whole tree.
+        """
+        if proc.poll() is not None:
+            return
+        if sys.platform == "win32":
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True, check=False,
+                )
+            except Exception as e:
+                self._log_proc(key, f"taskkill error: {e}")
+        else:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     def stop_component(self, key: str):
         proc = self.procs.get(key)
         if proc is None:
-            return
-        if proc.poll() is not None:
             self._set_status(key, False)
             return
         try:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            self._kill_tree(key, proc)
         except Exception as e:
             self._log_proc(key, f"stop error: {e}")
         self.procs[key] = None
         self._set_status(key, False)
         self._log_proc(key, "stopped")
+        # Catch any orphaned child that survived and still owns the port.
+        port = PORT_MAP.get(key)
+        if port is not None:
+            free_port(port)
 
     def start_all(self):
         for k in ("server", "viaproxy", "proxy", "client"):
             if not self._is_running(k):
                 self.start_component(k)
-                self.root.after(500)
 
     def stop_all(self):
         for k in ("client", "proxy", "viaproxy", "server"):
-            if self._is_running(k):
+            if self.procs.get(k) is not None:
                 self.stop_component(k)
+            else:
+                self._set_status(k, False)
+        # Also clear anything still bound to our ports that this launcher did
+        # not start (e.g. a previous start.bat run or an orphaned child).
+        for port in PORT_MAP.values():
+            free_port(port)
+        self._stop_html_server()
 
     # ---------- reader / watcher ----------
     def _reader(self, key: str, proc, q):
@@ -413,6 +462,75 @@ class LauncherApp:
             self.procs[key] = None
             self._set_status(key, False)
             self._log_proc(key, "process exited")
+
+    # ---------- HTML (TeaVM JS) client ----------
+    def _make_html_handler(self):
+        class QuietHandler(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, fmt, *args):
+                pass
+
+            def end_headers(self):
+                # Never cache: the launcher serves freshly rebuilt classes.js.
+                self.send_header("Cache-Control", "no-store")
+                super().end_headers()
+
+        return functools.partial(QuietHandler, directory=HTML_DIR)
+
+    def _start_html_server(self) -> bool:
+        if self.httpd is not None:
+            return True
+        if not os.path.isfile(os.path.join(HTML_DIR, "index.html")):
+            return False
+        for port in range(HTML_PORT, HTML_PORT + 20):
+            try:
+                httpd = http.server.ThreadingHTTPServer(
+                    ("127.0.0.1", port), self._make_html_handler())
+            except OSError:
+                continue
+            self.httpd = httpd
+            self.html_port = port
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            self._log_proc("client", f"HTML client serving {HTML_DIR} on port {port}")
+            return True
+        return False
+
+    def _stop_html_server(self):
+        if self.httpd is None:
+            return
+        try:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+        except Exception:
+            pass
+        self.httpd = None
+
+    def open_html_client(self):
+        if not os.path.isfile(os.path.join(HTML_DIR, "index.html")):
+            messagebox.showerror(
+                "HTML client not built",
+                "The web client has not been built yet.\n\n"
+                "Build it first from a terminal:\n"
+                "  cd eaglercraft\n"
+                "  .\\gradlew.bat target_teavm_javascript:generateJavaScript\n\n"
+                f"Expected: {HTML_DIR}",
+            )
+            return
+        if not self._start_html_server():
+            messagebox.showerror(
+                "HTML client",
+                "Could not find a free local port to serve the web client.")
+            return
+        url = f"http://127.0.0.1:{self.html_port}/"
+        self._log_proc("client", f"opening HTML client: {url}")
+        webbrowser.open(url)
+
+    def _on_close(self):
+        self.stop_all()
+        self._stop_html_server()
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     # ---------- misc ----------
     def show_help(self):

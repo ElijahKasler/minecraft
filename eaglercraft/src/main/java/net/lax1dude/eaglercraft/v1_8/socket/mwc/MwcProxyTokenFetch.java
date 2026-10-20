@@ -30,24 +30,32 @@ public class MwcProxyTokenFetch {
 		void onComplete(TokenResult result);
 	}
 
+	private static boolean claim(Object lock, boolean[] done) {
+		synchronized (lock) {
+			if (done[0]) {
+				return false;
+			}
+			done[0] = true;
+			return true;
+		}
+	}
+
 	/**
-	 * Fire-and-forget token fetch on a daemon thread so the GUI never freezes.
-	 * The callback runs off the render thread; a watchdog guarantees it is
-	 * invoked exactly once even if the fetch thread hangs.
+	 * Fire-and-forget token fetch on a daemon thread when the target supports
+	 * threads (desktop, JS); otherwise it runs inline on the render thread, which
+	 * is safe because the browser targets use synchronous HTTP. The callback is
+	 * guaranteed to be invoked exactly once.
 	 */
 	public static void requestTokenAsync(final String proxyBase, final String mcHost, final int mcPort,
 			final TokenCallback callback) {
-		final java.util.concurrent.atomic.AtomicBoolean done = new java.util.concurrent.atomic.AtomicBoolean(false);
+		final Object doneLock = new Object();
+		final boolean[] done = new boolean[1];
 		final Runnable[] watchdog = new Runnable[1];
 		watchdog[0] = new Runnable() {
 			@Override
 			public void run() {
-				try {
-					Thread.sleep(30000l);
-				} catch (Throwable t) {
-					return;
-				}
-				if (done.compareAndSet(false, true)) {
+				PlatformRuntime.sleepThread(30000l);
+				if (claim(doneLock, done)) {
 					TokenResult timeout = new TokenResult();
 					String shownBase;
 					try {
@@ -66,40 +74,43 @@ public class MwcProxyTokenFetch {
 				}
 			}
 		};
-		Thread worker = new Thread(new Runnable() {
-			@Override
-			public void run() {
-				TokenResult res;
-				try {
-					res = requestToken(proxyBase, mcHost, mcPort);
-				} catch (Throwable t) {
-					res = new TokenResult();
-					res.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
-							net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.UNREACHABLE,
-							"Token request crashed: " + t);
-				}
-				if (done.compareAndSet(false, true)) {
+		boolean async;
+		try {
+			async = PlatformRuntime.runAsync(new Runnable() {
+				@Override
+				public void run() {
+					TokenResult res;
 					try {
-						callback.onComplete(res);
-					} catch (Throwable t2) {
-						logger.warn("Token callback threw", t2);
+						res = requestToken(proxyBase, mcHost, mcPort);
+					} catch (Throwable t) {
+						res = new TokenResult();
+						res.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
+								net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.UNREACHABLE,
+								"Token request crashed: " + t);
+					}
+					if (claim(doneLock, done)) {
+						try {
+							callback.onComplete(res);
+						} catch (Throwable t2) {
+							logger.warn("Token callback threw", t2);
+						}
 					}
 				}
-			}
-		}, "MwcTokenFetch");
-		worker.setDaemon(true);
-		try {
-			worker.start();
-			Thread wd = new Thread(watchdog[0], "MwcTokenFetchWatchdog");
-			wd.setDaemon(true);
-			wd.start();
+			});
 		} catch (Throwable t) {
-			if (done.compareAndSet(false, true)) {
+			if (claim(doneLock, done)) {
 				TokenResult res = new TokenResult();
 				res.error = net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.mwc(
 						net.lax1dude.eaglercraft.v1_8.socket.ConnectErrorCodes.Token.UNREACHABLE,
 						"Background token fetch is not supported on this platform: " + t);
 				callback.onComplete(res);
+			}
+			return;
+		}
+		if (async) {
+			try {
+				PlatformRuntime.runAsync(watchdog[0]);
+			} catch (Throwable t) {
 			}
 		}
 	}
@@ -126,6 +137,36 @@ public class MwcProxyTokenFetch {
 			return "ws://" + httpBase.substring(7);
 		}
 		return httpBase;
+	}
+
+	/**
+	 * Derive the proxy HTTP base from a socket URL produced by {@link #requestToken}.
+	 * e.g. {@code ws://localhost:2344/api/vm/net/socket?token=abc} -> {@code http://localhost:2344}
+	 */
+	public static String httpBaseFromSocketUrl(String socketUrl) {
+		if (socketUrl == null) {
+			return null;
+		}
+		String s = socketUrl.trim();
+		if (s.startsWith("wss://")) {
+			s = "https://" + s.substring(6);
+		} else if (s.startsWith("ws://")) {
+			s = "http://" + s.substring(5);
+		}
+		int idx = s.indexOf("/api/vm/net");
+		if (idx >= 0) {
+			s = s.substring(0, idx);
+		} else {
+			int q = s.indexOf('?');
+			if (q >= 0) {
+				s = s.substring(0, q);
+			}
+			int slash = s.indexOf('/', s.indexOf("://") + 3);
+			if (slash >= 0) {
+				s = s.substring(0, slash);
+			}
+		}
+		return normalizeBase(s);
 	}
 
 	private static String quote(String s) {
@@ -228,10 +269,7 @@ public class MwcProxyTokenFetch {
 					logger.warn("Token request attempt {} to {} returned no response", attempt + 1, url);
 				}
 				if (resp == null && retry) {
-					try {
-						Thread.sleep(500l);
-					} catch (Throwable t) {
-					}
+					PlatformRuntime.sleepThread(500l);
 				}
 			}
 			if (resp != null) {

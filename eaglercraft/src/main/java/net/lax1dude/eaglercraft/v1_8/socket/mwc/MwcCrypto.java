@@ -1,44 +1,27 @@
 package net.lax1dude.eaglercraft.v1_8.socket.mwc;
 
-import net.lax1dude.eaglercraft.v1_8.EagRuntime;
-import net.lax1dude.eaglercraft.v1_8.internal.EnumPlatformType;
-
 /**
  * Crypto backend for yggdrasil online-mode authentication.
- * <p>
- * Desktop uses JCE {@code javax.crypto}; browser builds use
- * {@code window.crypto.subtle} via {@code @JSBody}.
- * Uses reflection to load platform-specific implementations.
+ *
+ * <p>All platforms share the same pure-Java implementation
+ * ({@link MwcCryptoShared}): AES-128/CFB8 for the transport stream and RSA
+ * PKCS#1 v1.5 for encrypting the shared secret. This is required because
+ * vanilla Minecraft's cipher (CFB8 with PKCS#1 v1.5) is not offered by Web
+ * Crypto, and it keeps desktop and browser behaviour byte-identical.</p>
  */
 public interface MwcCrypto {
 
 	/** Generate a 16-byte random shared secret for AES. */
-	default byte[] newSharedSecret() {
-		byte[] b = new byte[16];
-		new java.security.SecureRandom().nextBytes(b);
-		return b;
-	}
+	byte[] newSharedSecret();
 
-	/** RSA encrypt {@code data} with {@code publicKey} (DER SubjectPublicKeyInfo). */
+	/** RSA PKCS#1 v1.5 encrypt {@code data} with a DER X.509 public key. */
 	byte[] rsaEncrypt(byte[] publicKey, byte[] data);
 
-	/** AES-CTR crypt (encrypt or decrypt). {@code counter} is the 128-bit initial counter. */
-	byte[] aesCtr(byte[] key, long counter, byte[] data, boolean encrypt);
+	/** Create a fresh AES-128/CFB8 stream cipher (key = IV = {@code secret}). */
+	MwcCfb8 createCfb8(byte[] secret);
 
-	/** Obtain the platform crypto instance via reflection. */
+	/** Obtain the platform crypto instance. */
 	static MwcCrypto get() {
-		String className;
-		if (EagRuntime.getPlatformType() == EnumPlatformType.DESKTOP) {
-			className = "net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcCryptoDesktop";
-		} else {
-			className = "net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcCryptoTeaVM";
-		}
-		try {
-			Class<?> cls = Class.forName(className);
-			java.lang.reflect.Method m = cls.getDeclaredMethod("getInstance");
-			return (MwcCrypto) m.invoke(null);
-		} catch (Throwable t) {
-			throw new RuntimeException("Cannot load crypto: " + className, t);
-		}
+		return MwcCryptoShared.getInstance();
 	}
 }

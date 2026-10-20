@@ -8,6 +8,10 @@ build/
 # Node / bun
 node_modules/
 
+# Ad-hoc test servers used to validate multi-version support (protocol translation)
+server17/
+server263/
+
 # OS junk
 Thumbs.db
 desktop.ini

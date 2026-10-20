@@ -14,6 +14,9 @@ public class MwcAuthState {
 	/** Server's verify token (encrypted with shared secret). */
 	public final byte[] verifyToken;
 
+	/** mwc-proxy HTTP base (http(s)://host:port) used for /session join. */
+	public String proxyBase = null;
+
 	/** Randomly generated 16-byte AES shared secret. */
 	public byte[] sharedSecret;
 
@@ -28,6 +31,9 @@ public class MwcAuthState {
 
 	/** Selected profile UUID. */
 	public String selectedProfileId;
+
+	/** Selected profile name (online mode). */
+	public String profileName;
 
 	/** Whether authentication is complete. */
 	public boolean complete = false;

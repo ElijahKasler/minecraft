@@ -1173,6 +1173,35 @@ public class PlatformRuntime {
 		return (long)(Math.random() * 9007199254740991.0);
 	}
 
+	@JSBody(params = { "typed" }, script = "crypto.getRandomValues(typed);")
+	private static native void fillRandomBytes0(org.teavm.jso.typedarrays.Uint8Array typed);
+
+	public static void fillRandomBytes(byte[] arr) {
+		if (arr.length == 0) {
+			return;
+		}
+		fillRandomBytes0(net.lax1dude.eaglercraft.v1_8.internal.teavm.TeaVMUtils.unwrapUnsignedByteArray(arr));
+	}
+
+	public static boolean threadsSupported() {
+		return true;
+	}
+
+	public static boolean runAsync(Runnable r) {
+		Thread t = new Thread(r, "EaglerAsync");
+		t.setDaemon(true);
+		t.start();
+		return true;
+	}
+
+	public static void sleepThread(long millis) {
+		try {
+			Thread.sleep(millis);
+		} catch(InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+	}
+
 	private static String currentThreadName = "main";
 
 	public static String currentThreadName() {

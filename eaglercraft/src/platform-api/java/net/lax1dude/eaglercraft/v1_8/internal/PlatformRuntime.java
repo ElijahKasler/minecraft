@@ -116,6 +116,21 @@ public class PlatformRuntime {
 
 	public static native long randomSeed();
 
+	/** Fill {@code arr} with cryptographically strong random bytes. */
+	public static native void fillRandomBytes(byte[] arr);
+
+	/** True when this target can run background threads (desktop, JS). */
+	public static native boolean threadsSupported();
+
+	/**
+	 * Run {@code r} on a background thread when possible and return true.
+	 * Targets without threading run {@code r} synchronously and return false.
+	 */
+	public static native boolean runAsync(Runnable r);
+
+	/** Sleep from background work; a no-op on targets without threading. */
+	public static native void sleepThread(long millis);
+
 	public static native void exit();
 
 	public static native IClientConfigAdapter getClientConfigAdapter();

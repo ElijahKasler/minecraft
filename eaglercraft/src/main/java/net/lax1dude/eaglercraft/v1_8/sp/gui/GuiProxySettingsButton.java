@@ -51,7 +51,10 @@ public class GuiProxySettingsButton extends Gui {
 		GlStateManager.color(1.0f, 1.0f, 1.0f, 1.0f);
 
 		int w = mc.fontRendererObj.getStringWidth(text);
-		boolean hover = xx > 1 && yy > this.y - 4 && xx < (w * 3 / 4) + 7 && yy < this.y + 7;
+		// The label is drawn at this.y * 0.75 (scale 0.75 above), so the
+		// clickable area must be computed in scaled screen coordinates too.
+		int ty = (this.y * 3) / 4;
+		boolean hover = xx > 1 && yy > ty - 3 && xx < (w * 3 / 4) + 7 && yy < ty + 10;
 		if (hover) {
 			Mouse.showCursor(EnumCursorType.HAND);
 		}
@@ -64,7 +67,8 @@ public class GuiProxySettingsButton extends Gui {
 
 	public void mouseClicked(int xx, int yy, int btn) {
 		int w = mc.fontRendererObj.getStringWidth(text);
-		if (xx > 2 && yy > this.y - 5 && xx < (w * 3 / 4) + 5 && yy < this.y + 6) {
+		int ty = (this.y * 3) / 4;
+		if (xx > 2 && yy > ty - 3 && xx < (w * 3 / 4) + 5 && yy < ty + 10) {
 			this.mc.getSoundHandler()
 					.playSound(PositionedSoundRecord.create(new ResourceLocation("gui.button.press"), 1.0F));
 			mc.displayGuiScreen(new GuiScreenMwcProxyList(screen));

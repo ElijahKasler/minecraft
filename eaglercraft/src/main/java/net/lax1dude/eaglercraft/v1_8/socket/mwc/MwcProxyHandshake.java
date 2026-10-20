@@ -167,8 +167,16 @@ public class MwcProxyHandshake {
 	private boolean enteredPlay = false;
 	private int ticks = 0;
 	private int connectedTicks = 0;
+	private int closedTicks = 0;
 	private boolean loggedConnected = false;
 	private boolean loggedLoginSent = false;
+
+	/**
+	 * How many ticks to keep draining after the WS reports CLOSED before we give
+	 * up and declare a reasonless close. Covers browsers that dispatch the last
+	 * "message" event after "close".
+	 */
+	private static final int CLOSED_GRACE_TICKS = 10;
 
 	/** No Login Success within this after WS open -> fail with stage info. */
 	private static final int LOGIN_TIMEOUT_TICKS = 25 * 20;
@@ -226,14 +234,27 @@ public class MwcProxyHandshake {
 					return;
 				case FAILED:
 				case CLOSED:
+					// The server's Login Disconnect (or a proxy-shutdown notice) is often
+					// still buffered when the close event lands, so drain it before
+					// deciding the connection died silently.
+					networkManager.drainBufferedOnClose();
 					if (networkManager.getDisconnectReason() != null) {
 						fail(null, networkManager.getDisconnectReason());
-					} else if (!networkManager.hasReceivedTunnelData()) {
+						return;
+					}
+					// Browsers can dispatch the final "message" after "close"; keep
+					// draining for a few ticks so the real reason still gets shown.
+					if (++closedTicks < CLOSED_GRACE_TICKS) {
+						return;
+					}
+					if (!networkManager.hasReceivedTunnelData()) {
 						fail("connect.failed", ConnectErrorCodes.mwc(ConnectErrorCodes.Play.CLOSED,
 								"The server closed the connection without sending a single byte.\n"
-										+ "Fix: it is likely NOT a vanilla Minecraft 1.8 server (e.g. a 1.7.x or"
-										+ " Eaglercraft server). The MWC proxy requires a vanilla MC 1.8"
-										+ " (protocol 47) server. Check the server console."));
+										+ "Fix: it is likely NOT a vanilla Minecraft 1.8 server. The MWC"
+										+ " tunnel only speaks vanilla MC 1.8 (protocol 47). Servers that"
+										+ " require 1.13+ (e.g. most modern SMPs) reject this client outright -"
+										+ " route through ViaProxy or use web-client-next. Check the server"
+										+ " console."));
 					} else {
 						fail("connect.failed", ConnectErrorCodes.mwc(ConnectErrorCodes.Play.CLOSED,
 								"Proxy tunnel closed before login completed.\n"
@@ -271,8 +292,9 @@ public class MwcProxyHandshake {
 							? "Fix: the server may be doing a slow online-mode (premium) auth, or it stopped"
 									+ " answering mid-login. Check the server console; retry."
 							: "Fix: the server accepted the connection but never sent a single byte — it is"
-									+ " likely NOT a vanilla Minecraft 1.8 server (e.g. a 1.7.x or Eaglercraft"
-									+ " server). The MWC proxy requires a vanilla MC 1.8 (protocol 47) server.";
+									+ " likely NOT a vanilla Minecraft 1.8 server. Servers that require 1.13+"
+									+ " cannot be joined by this 1.8 client; route through ViaProxy or use"
+									+ " web-client-next.";
 					fail("connect.timeout", ConnectErrorCodes.mwc(ConnectErrorCodes.Play.TIMEOUT,
 							"Server did not complete login within 25s.\n" + "Stage: " + stage + "\n" + "Target: "
 									+ mcHost + ":" + mcPort + "\n" + hint));

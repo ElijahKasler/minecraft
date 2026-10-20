@@ -470,6 +470,37 @@ public class PlatformRuntime {
 		return (long)(Math.random() * 9007199254740991.0);
 	}
 
+	@JSBody(params = { "typed" }, script = "crypto.getRandomValues(typed);")
+	private static native void fillRandomBytes0(Uint8Array typed);
+
+	public static void fillRandomBytes(byte[] arr) {
+		int len = arr.length;
+		if (len == 0) {
+			return;
+		}
+		MemoryStack.push();
+		try {
+			org.teavm.interop.Address addr = MemoryStack.malloc(len);
+			Uint8Array view = WASMGCBufferAllocator.getUnsignedByteBufferView0(addr, len);
+			fillRandomBytes0(view);
+			net.lax1dude.eaglercraft.v1_8.internal.buffer.WASMGCDirectArrayCopy.memcpy(arr, 0, addr, len);
+		} finally {
+			MemoryStack.pop();
+		}
+	}
+
+	public static boolean threadsSupported() {
+		return false;
+	}
+
+	public static boolean runAsync(Runnable r) {
+		r.run();
+		return false;
+	}
+
+	public static void sleepThread(long millis) {
+	}
+
 	public static void exit() {
 		logger.fatal("Game is attempting to exit!");
 	}

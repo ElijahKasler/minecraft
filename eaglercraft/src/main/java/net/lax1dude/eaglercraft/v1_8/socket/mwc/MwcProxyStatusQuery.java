@@ -53,15 +53,21 @@ public class MwcProxyStatusQuery implements IServerQuery {
 		this.proxyBase = proxyBase;
 		this.host = host;
 		this.port = port;
-		Thread worker = new Thread(new Runnable() {
-			@Override
-			public void run() {
-				runQuery();
-			}
-		}, "MwcStatusQuery-" + host + ":" + port);
-		worker.setDaemon(true);
+		if (!net.lax1dude.eaglercraft.v1_8.internal.PlatformRuntime.threadsSupported()) {
+			// The browser WASM target has no threads, and a blocking socket poll
+			// would freeze the render loop, so proxy MOTD pings are skipped here.
+			logger.info("Proxy status query is not supported on this target");
+			done = true;
+			open = false;
+			return;
+		}
 		try {
-			worker.start();
+			net.lax1dude.eaglercraft.v1_8.internal.PlatformRuntime.runAsync(new Runnable() {
+				@Override
+				public void run() {
+					runQuery();
+				}
+			});
 		} catch (Throwable t) {
 			logger.warn("Could not start status query thread: {}", t.toString());
 			done = true;
@@ -590,10 +596,7 @@ public class MwcProxyStatusQuery implements IServerQuery {
 	}
 
 	private static void sleep(long ms) {
-		try {
-			Thread.sleep(ms);
-		} catch (Throwable t) {
-		}
+		net.lax1dude.eaglercraft.v1_8.internal.PlatformRuntime.sleepThread(ms);
 	}
 
 	@Override

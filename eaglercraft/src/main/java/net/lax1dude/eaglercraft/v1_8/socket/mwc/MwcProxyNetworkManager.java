@@ -39,9 +39,10 @@ import net.minecraft.util.IChatComponent;
  * path as vanilla/Eagler play.</p>
  *
  * <p>Supports both offline (cracked) and online (premium) 1.8 servers via
- * yggdrasil authentication. Desktop clients perform RSA/AES crypto locally via
- * JCE; browser builds delegate yggdrasil auth to
- * minecraft-web-client-next and apply AES/CTR locally via Web Crypto.</p>
+ * yggdrasil authentication. All platforms use the same pure-Java RSA PKCS#1
+ * v1.5 + AES-128/CFB8 implementation ({@link MwcCryptoShared}). CFB8 is a
+ * streaming cipher: the length prefixes are encrypted too, so the ciphers are
+ * applied to the raw byte stream rather than to individual packets.</p>
  */
 public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 
@@ -74,11 +75,11 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 
 	/** AES shared secret for encrypted play mode (online servers). */
 	private byte[] sharedSecret = null;
-	/** AES/CTR block counter for outgoing packets. */
-	private long encryptCounter = 0;
-	/** AES/CTR block counter for incoming packets. */
-	private long decryptCounter = 0;
-	/** Whether play packets are encrypted (online mode). */
+	/** Stateful AES-128/CFB8 cipher for the inbound byte stream. */
+	private MwcCfb8 decryptCipher = null;
+	/** Stateful AES-128/CFB8 cipher for the outbound byte stream. */
+	private MwcCfb8 encryptCipher = null;
+	/** Whether the tunnel byte stream is encrypted (online mode). */
 	private boolean encrypted = false;
 	/** Real UUID from Login Success (online mode). */
 	private String lastLoginUuid = null;
@@ -193,6 +194,33 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 	}
 
 	/**
+	 * The tunnel WS has closed. A server {@code Login Disconnect} (or a
+	 * {@code proxy-shutdown:} notice) frequently arrives in the same batch as the
+	 * close event, so the frames are still sitting in the WS receive buffer while
+	 * {@link IWebSocketClient#getState()} already reports CLOSED. Drain whatever
+	 * is buffered so the real reason is surfaced instead of a misleading
+	 * "closed without sending a single byte" message.
+	 *
+	 * @return true if a disconnect reason was set by the drained packets
+	 */
+	boolean drainBufferedOnClose() {
+		try {
+			if (webSocketClient.availableStringFrames() <= 0 && webSocketClient.availableBinaryFrames() <= 0) {
+				return disconnectReason != null;
+			}
+			if (loginFinished) {
+				pumpTcpFrames(false);
+			} else {
+				pumpTcpFrames(true);
+			}
+		} catch (Throwable t) {
+			// A Login Disconnect / proxy-shutdown sets disconnectReason then throws
+			// to unwind the packet loop - that is expected.
+		}
+		return disconnectReason != null;
+	}
+
+	/**
 	 * Drain WS binary frames into tcpBuf, extract complete length-prefixed
 	 * packets, strip length (+ decompress if threshold negotiated), dispatch.
 	 *
@@ -219,6 +247,11 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 		for (int fi = 0; fi < frames.size(); ++fi) {
 			byte[] chunk = frames.get(fi).getByteArray();
 			totalBytes += chunk.length;
+			if (encrypted && decryptCipher != null) {
+				// CFB8 is a stream cipher; decrypt in arrival order, before framing,
+				// because vanilla encrypts the VarInt length prefixes too.
+				decryptCipher.decrypt(chunk);
+			}
 			ensureCapacity(tcpLen + chunk.length);
 			System.arraycopy(chunk, 0, tcpBuf, tcpLen, chunk.length);
 			tcpLen += chunk.length;
@@ -244,11 +277,6 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 			System.arraycopy(tcpBuf, offset + lenBytes, pkt, 0, pktLen);
 			offset += lenBytes + pktLen;
 			++debugPacketCounter;
-			if (encrypted && sharedSecret != null) {
-				int blocks = (pkt.length + 15) / 16;
-				pkt = MwcCrypto.get().aesCtr(sharedSecret, decryptCounter, pkt, false);
-				decryptCounter += blocks;
-			}
 			if (compressionThreshold >= 0) {
 				pkt = handleDecompression(pkt);
 				if (pkt == null) continue;
@@ -286,7 +314,8 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 					plain = reasonJson;
 				}
 				disconnectReason = new ChatComponentText(ConnectErrorCodes.mwc(ConnectErrorCodes.Play.KICK,
-						plain + "\n(Version mismatch? This client is 1.8. If the server is newer, use web-client-next.)"));
+						plain + "\n(Version mismatch? This client is 1.8. If the server needs 1.13+, route through"
+								+ " ViaProxy or use web-client-next.)"));
 				logger.error("Login disconnect from server: {}", plain);
 				doClientDisconnect(disconnectReason);
 				throw new IOException(disconnectReason.getUnformattedText());
@@ -310,6 +339,7 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 
 				// Start yggdrasil auth flow
 				authState = new MwcAuthState(serverId, publicKey, verifyToken);
+				authState.proxyBase = MwcProxyTokenFetch.httpBaseFromSocketUrl(webSocketClient.getCurrentURI());
 				authDriver = MwcAuthDriver.get();
 				authDriver.begin(authState, new MwcAuthDriver.AuthCallback() {
 					@Override
@@ -318,11 +348,7 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 						// on right after validating our response, so Set Compression and
 						// Login Success arrive encrypted.
 						if (state.sharedSecret != null) {
-							sharedSecret = state.sharedSecret;
-							encrypted = true;
-							encryptCounter = 0;
-							decryptCounter = 0;
-							logger.info("MWC encryption enabled (shared secret={} bytes)", sharedSecret.length);
+							enableEncryption(state.sharedSecret);
 						}
 						// Auth succeeded - send Encryption Response
 						try {
@@ -364,11 +390,7 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 				// already enabled in onSuccess; this is a late-secret fallback only —
 				// never reset counters here, the stream position must be preserved)
 				if (!encrypted && authState != null && authState.sharedSecret != null) {
-					this.sharedSecret = authState.sharedSecret;
-					this.encrypted = true;
-					this.encryptCounter = 0;
-					this.decryptCounter = 0;
-					logger.info("MWC encryption enabled (shared secret={} bytes)", sharedSecret.length);
+					enableEncryption(authState.sharedSecret);
 				}
 				// Store real session data for offline/online UUID
 				if (uuid != null && name != null) {
@@ -452,16 +474,27 @@ public class MwcProxyNetworkManager extends EaglercraftNetworkManager {
 		if (compressionThreshold >= 0) {
 			payload = compressOutboundFrame(payload);
 		}
-		if (encrypted && sharedSecret != null && packetState == EnumConnectionState.PLAY) {
-			int blocks = (payload.length + 15) / 16;
-			payload = MwcCrypto.get().aesCtr(sharedSecret, encryptCounter, payload, true);
-			encryptCounter += blocks;
-		}
 		byte[] lenPrefix = encodeVarInt(payload.length);
 		byte[] out = new byte[lenPrefix.length + payload.length];
 		System.arraycopy(lenPrefix, 0, out, 0, lenPrefix.length);
 		System.arraycopy(payload, 0, out, lenPrefix.length, payload.length);
+		if (encrypted && encryptCipher != null) {
+			// Encrypt the length prefix and payload together as one stream chunk.
+			encryptCipher.encrypt(out);
+		}
 		webSocketClient.send(out);
+	}
+
+	/**
+	 * Turn on transport encryption. Both ciphers start at IV = shared secret and
+	 * must advance over every subsequent byte, matching the server exactly.
+	 */
+	private void enableEncryption(byte[] secret) {
+		this.sharedSecret = secret;
+		this.decryptCipher = MwcCrypto.get().createCfb8(secret);
+		this.encryptCipher = MwcCrypto.get().createCfb8(secret);
+		this.encrypted = true;
+		logger.info("MWC encryption enabled (AES-128/CFB8, shared secret={} bytes)", secret.length);
 	}
 
 	@Override

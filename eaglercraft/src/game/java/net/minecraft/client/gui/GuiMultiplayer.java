@@ -15,6 +15,7 @@ import net.lax1dude.eaglercraft.v1_8.log4j.Logger;
 import net.lax1dude.eaglercraft.v1_8.opengl.GlStateManager;
 import net.lax1dude.eaglercraft.v1_8.sp.gui.GuiNetworkSettingsButton;
 import net.lax1dude.eaglercraft.v1_8.sp.gui.GuiProxySettingsButton;
+import net.lax1dude.eaglercraft.v1_8.sp.gui.GuiMsaSettingsButton;
 import net.lax1dude.eaglercraft.v1_8.sp.gui.GuiScreenConnectOption;
 import net.lax1dude.eaglercraft.v1_8.sp.gui.GuiScreenLANConnecting;
 import net.lax1dude.eaglercraft.v1_8.sp.lan.LANServerList;
@@ -75,11 +76,13 @@ public class GuiMultiplayer extends GuiScreen implements GuiYesNoCallback {
 
 	private final GuiNetworkSettingsButton relaysButton;
 	private final GuiProxySettingsButton proxySettingsButton;
+	private final GuiMsaSettingsButton msaSettingsButton;
 
 	public GuiMultiplayer(GuiScreen parentScreen) {
 		this.parentScreen = parentScreen;
 		this.relaysButton = new GuiNetworkSettingsButton(this);
 		this.proxySettingsButton = new GuiProxySettingsButton(this, 21);
+		this.msaSettingsButton = new GuiMsaSettingsButton(this, 37);
 		if (lanServerList != null) {
 			lanServerList.forceRefresh();
 		}
@@ -349,6 +352,7 @@ public class GuiMultiplayer extends GuiScreen implements GuiYesNoCallback {
 		super.drawScreen(i, j, f);
 		relaysButton.drawScreen(i, j);
 		proxySettingsButton.drawScreen(i, j);
+		msaSettingsButton.drawScreen(i, j);
 		drawPluginDownloadLink(i, j);
 		if (this.hoveringText != null) {
 			this.drawHoveringText(Lists.newArrayList(Splitter.on("\n").split(this.hoveringText)), i, j);
@@ -430,6 +434,7 @@ public class GuiMultiplayer extends GuiScreen implements GuiYesNoCallback {
 	protected void mouseClicked(int parInt1, int parInt2, int parInt3) {
 		relaysButton.mouseClicked(parInt1, parInt2, parInt3);
 		proxySettingsButton.mouseClicked(parInt1, parInt2, parInt3);
+		msaSettingsButton.mouseClicked(parInt1, parInt2, parInt3);
 		super.mouseClicked(parInt1, parInt2, parInt3);
 		this.serverListSelector.mouseClicked(parInt1, parInt2, parInt3);
 		String text = "Download EaglerXServer";

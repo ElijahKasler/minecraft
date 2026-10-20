@@ -685,6 +685,33 @@ public class PlatformRuntime {
 		}
 	}
 
+	private static final java.security.SecureRandom secureRandom = new java.security.SecureRandom();
+
+	public static void fillRandomBytes(byte[] arr) {
+		synchronized(secureRandom) {
+			secureRandom.nextBytes(arr);
+		}
+	}
+
+	public static boolean threadsSupported() {
+		return true;
+	}
+
+	public static boolean runAsync(Runnable r) {
+		Thread t = new Thread(r, "EaglerAsync");
+		t.setDaemon(true);
+		t.start();
+		return true;
+	}
+
+	public static void sleepThread(long millis) {
+		try {
+			Thread.sleep(millis);
+		} catch(InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+	}
+
 	public static void getWindowXY(int[] x, int[] y) {
 		glfwGetWindowPos(windowHandle, x, y);
 	}

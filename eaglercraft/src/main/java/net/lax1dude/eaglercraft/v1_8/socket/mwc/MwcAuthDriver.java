@@ -1,14 +1,13 @@
 package net.lax1dude.eaglercraft.v1_8.socket.mwc;
 
-import net.lax1dude.eaglercraft.v1_8.EagRuntime;
-import net.lax1dude.eaglercraft.v1_8.internal.EnumPlatformType;
-
 /**
- * Platform-specific yggdrasil authentication driver.
- * <p>
- * Desktop performs RSA+AES crypto locally via JCE.
- * Browser builds delegate yggdrasil to minecraft-web-client-next.
- * Uses reflection to load platform-specific implementations.
+ * yggdrasil (Microsoft / online-mode) authentication driver.
+ *
+ * <p>Every platform uses the same {@link MwcAuthDriverShared} implementation:
+ * RSA/CFB8 crypto runs locally via {@link MwcCrypto}, while the Microsoft token
+ * exchange and Mojang session join are delegated to the user's mwc-proxy over
+ * plain JSON HTTP. This works on the desktop JVM, TeaVM (JS) and TeaVM
+ * (WASM-GC) alike.</p>
  */
 public interface MwcAuthDriver {
 
@@ -21,20 +20,35 @@ public interface MwcAuthDriver {
 	/** Begin the yggdrasil auth flow for the given Encryption Request data. */
 	void begin(MwcAuthState state, AuthCallback callback);
 
-	/** Obtain the platform auth driver instance via reflection. */
+	/** True if this platform can sign in to Microsoft accounts. */
+	boolean isSupported();
+
+	/** True if a Microsoft account is currently signed in. */
+	boolean isSignedIn();
+
+	/** Signed-in Minecraft profile name, or null. */
+	String getSignedInName();
+
+	/** Forget the signed-in account. */
+	void signOut();
+
+	/** Shared, GUI-pollable state for the device-code sign-in flow. */
+	MwcMsaSignInState getSignInState();
+
+	/** Start the Microsoft device-code sign-in flow against the given proxy. */
+	void startSignIn(String proxyBase);
+
+	/** Abort an in-progress sign-in flow. */
+	void cancelSignIn();
+
+	/**
+	 * Advance the sign-in flow by at most one short HTTP request. Called once per
+	 * GUI tick from the sign-in screen; a no-op when nothing is in progress.
+	 */
+	void tick();
+
+	/** Obtain the shared auth driver instance. */
 	static MwcAuthDriver get() {
-		String className;
-		if (EagRuntime.getPlatformType() == EnumPlatformType.DESKTOP) {
-			className = "net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcAuthDriverDesktop";
-		} else {
-			className = "net.lax1dude.eaglercraft.v1_8.socket.mwc.MwcAuthDriverTeaVM";
-		}
-		try {
-			Class<?> cls = Class.forName(className);
-			java.lang.reflect.Method m = cls.getDeclaredMethod("getInstance");
-			return (MwcAuthDriver) m.invoke(null);
-		} catch (Throwable t) {
-			throw new RuntimeException("Cannot load auth driver: " + className, t);
-		}
+		return MwcAuthDriverShared.getInstance();
 	}
 }
